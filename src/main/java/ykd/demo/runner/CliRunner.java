@@ -36,7 +36,7 @@ public class CliRunner implements CommandLineRunner {
                             showHelp();
                             break;
                         case "version":
-                            System.out.println("程序版本信息：" + VERSION);
+                            System.out.println("程序版本：" + VERSION);
                             break;
                         case "status":
                             showStatus();
