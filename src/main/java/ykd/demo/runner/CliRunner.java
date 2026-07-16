@@ -12,7 +12,7 @@ import java.util.Scanner;
 public class CliRunner implements CommandLineRunner {
     private static final String VERSION ="1.0.0";
     private final long startTime;
-    private final WeatherService weatherService;
+    private final WeatherService weatherService; // final 保证注入后不被篡改
     public CliRunner(WeatherService weatherService) {
         this.weatherService = weatherService;
         this.startTime = System.currentTimeMillis();
