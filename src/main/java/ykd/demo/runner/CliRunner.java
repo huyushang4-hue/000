@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
 
 import org.springframework.stereotype.Component;
+import ykd.demo.service.AiChatService;
 import ykd.demo.service.WeatherService;
 import java.util.Scanner;
 
@@ -13,9 +14,11 @@ public class CliRunner implements CommandLineRunner {
     private static final String VERSION ="1.0.0";
     private final long startTime;
     private final WeatherService weatherService; // final 保证注入后不被篡改
-    public CliRunner(WeatherService weatherService) {
+    private final AiChatService aiChatService;
+    public CliRunner(WeatherService weatherService,AiChatService aiChatService) {
         this.weatherService = weatherService;
         this.startTime = System.currentTimeMillis();
+        this.aiChatService=aiChatService;
     }
 
 
@@ -43,6 +46,12 @@ public class CliRunner implements CommandLineRunner {
                             break;
                         case "test":
                             int x=1/0;
+                            break;
+                        case "qwen":
+                            System.out.println("请输入");
+                            String txt=scanner.nextLine().trim();
+                            String result1=aiChatService.getAiResponse(txt);
+                            System.out.println(result1);
                             break;
                         case "weather":
                             System.out.print("请输入城市名：");

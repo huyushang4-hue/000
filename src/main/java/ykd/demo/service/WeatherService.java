@@ -32,7 +32,7 @@ public class WeatherService {
     public WeatherService() {
         // System.getenv("环境变量名") → 读取操作系统的环境变量
         // 你之前在 IDEA Run Configuration 里填的就是环境变量
-        this.apiKey = System.getenv("A_QWEN_API_KEY");
+        this.apiKey = System.getenv("AMAP_API_KEY");
 
         // RestClient.create() → 创建一个 HTTP 客户端，无需配置，直接用
         this.restClient = RestClient.create();
