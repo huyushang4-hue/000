@@ -47,12 +47,17 @@ public class CliRunner implements CommandLineRunner {
                         case "test":
                             int x=1/0;
                             break;
-                        case "qwen":
-                            System.out.println("请输入");
-                            String txt=scanner.nextLine().trim();
-                            String result1=aiChatService.getAiResponse(txt);
-                            System.out.println(result1);
+                        case "qwen": {
+                            System.out.println("进入聊天模式，输入 exit 退出");
+                            while (true) {
+                                System.out.print("你> ");
+                                String msg = scanner.nextLine().trim();
+                                if (msg.equalsIgnoreCase("exit")) break;
+                                String result1 = aiChatService.chat(msg);
+                                System.out.println("AI> " + result1);
+                            }
                             break;
+                        }
                         case "weather":
                             System.out.print("请输入城市名：");
                             String city = scanner.nextLine().trim();
