@@ -7,6 +7,7 @@ import com.github.wechat.ilink.sdk.core.config.ILinkConfig;
 import com.github.wechat.ilink.sdk.core.model.ImageItem;
 import com.github.wechat.ilink.sdk.core.model.MessageItem;
 import com.github.wechat.ilink.sdk.core.model.WeixinMessage;
+import ykd.demo.intent.Intent;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.client.RestClient;
 import org.springframework.stereotype.Service;
@@ -23,14 +24,19 @@ public class ILinkBotService {
     private final ILinkClient client;
     private final WeatherService weatherService;
     private final AiSdkChatService aiSdkChatService;
+    private final IntentRecognizer intentRecognizer;
     private final RestClient restClient = RestClient.create();
 
-    public ILinkBotService(WeatherService weatherService, AiSdkChatService aiSdkChatService) {
+    public ILinkBotService(WeatherService weatherService,
+                           AiSdkChatService aiSdkChatService,
+                           IntentRecognizer intentRecognizer) {
         this.weatherService = weatherService;
         this.aiSdkChatService = aiSdkChatService;
+        this.intentRecognizer = intentRecognizer;
 
         ILinkConfig config = ILinkConfig.builder()
                 .heartbeatEnabled(true)
+                .heartbeatIntervalMs(5000L)  // 每 5 秒拉一次消息，减少延迟
                 .build();
 
         this.client = ILinkClient.builder()
@@ -122,20 +128,41 @@ public class ILinkBotService {
         log.info("回复 [{}]: {}", fromUserId, reply);
     }
 
-    /** 处理纯文字 */
+    /** 处理纯文字 → 意图识别 → 分发 */
     private String handleText(String fromUserId, String raw) {
-        if (raw.startsWith("/")) {
-            return dispatch(raw);
+        Intent intent = intentRecognizer.recognize(raw);
+        log.info("意图识别结果={}, input={}", intent, raw);
+
+        return switch (intent) {
+            case GENERATE_IMAGE -> handleGenerateImage(fromUserId, raw);
+            case WEATHER        -> handleWeather(raw);
+            case CHAT           -> aiSdkChatService.chat(raw);
+            case UNKNOWN        -> "没听懂，可以再说一遍吗？";
+        };
+    }
+
+    /** 生图意图：清洗关键词 → 调模型 → 发微信 */
+    private String handleGenerateImage(String fromUserId, String raw) {
+        String prompt = raw
+                .replace("生成图片", "")
+                .replace("画", "")
+                .replace("一张", "")
+                .replace("一个", "")
+                .replace("一只", "")
+                .replace("给我", "")
+                .replace("帮我", "")
+                .trim();
+        String imageUrl = aiSdkChatService.generateImage(prompt);
+        return sendGeneratedImageBack(fromUserId, imageUrl);
+    }
+
+    /** 天气意图：去掉 /weather 前缀 → 调 WeatherService */
+    private String handleWeather(String raw) {
+        String argument = raw.replaceFirst("/weather", "").trim();
+        if (argument.isBlank()) {
+            return "请带城市名，如：/weather 北京";
         }
-        if (raw.contains("生成图片") || raw.contains("画")) {
-            String prompt = raw.replace("生成图片", "")
-                    .replace("画", "")
-                    .replace("一张", "")
-                    .trim();
-            String imageUrl = aiSdkChatService.generateImage(prompt);
-            return sendGeneratedImageBack(fromUserId, imageUrl);
-        }
-        return aiSdkChatService.chat(raw);
+        return weatherService.getWeather(argument);
     }
 
     /** 下载生成的图片并通过微信发回 */
@@ -156,25 +183,5 @@ public class ILinkBotService {
             log.error("发送生成图片失败，url={}", imageUrl, e);
             return "图片生成成功但发送失败，URL：" + imageUrl;
         }
-    }
-
-    /** 命令分发 */
-    private String dispatch(String raw) {
-        String[] parts = raw.trim().split("\\s+", 2);
-        String command = parts[0].toLowerCase();
-        String argument = parts.length > 1 ? parts[1] : "";
-
-        return switch (command) {
-            case "/help" -> "命令：/help /version /status /weather <城市名>";
-            case "/version" -> "版本：1.0.0";
-            case "/status" -> "运行中，Java 21 + Spring Boot 4.1";
-            case "/weather" -> argument.isBlank()
-                    ? "请带城市名，如：/weather 北京"
-                    : weatherService.getWeather(argument);
-            case "/qwen" -> argument.isBlank()
-                    ? "请带内容，如：/qwen 帮我写首诗"
-                    : aiSdkChatService.chat(argument);
-            default -> "未知命令，回复 /help 查看帮助";
-        };
     }
 }
