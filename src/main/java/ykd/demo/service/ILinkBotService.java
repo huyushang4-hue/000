@@ -17,10 +17,12 @@ public class ILinkBotService {
     private final ILinkClient client;
     private final WeatherService weatherService;    // 复用上午的
     private final AtomicBoolean stopFlag = new AtomicBoolean(false);
+    private final AiChatService aiChatService;
 
-    public ILinkBotService(WeatherService weatherService) {
+    public ILinkBotService(WeatherService weatherService,AiChatService aiChatService) {
         this.weatherService = weatherService;
         this.client = ILinkClient.builder().token("").build();
+        this.aiChatService = aiChatService;
     }
 
     /** 启动：扫码登录 → 进入消息循环 */
@@ -84,6 +86,9 @@ public class ILinkBotService {
             case "weather" -> argument.isBlank()
                     ? "请带城市名，如：weather 北京"
                     : weatherService.getWeather(argument);
+            case "ai" -> argument.isBlank()
+                    ? "请带内容，如：ai 帮我写首诗"
+                    : aiChatService.chat(argument);
             default        -> "未知命令，回复 help 查看帮助";
         };
     }
