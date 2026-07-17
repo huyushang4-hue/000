@@ -1,5 +1,6 @@
 package ykd.demo.runner;
 
+import com.github.wechat.ilink.sdk.ILinkClient;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;

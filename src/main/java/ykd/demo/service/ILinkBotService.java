@@ -1,100 +1,180 @@
 package ykd.demo.service;
 
-import com.openilink.ILinkClient;
-import com.openilink.auth.LoginCallbacks;
-import com.openilink.model.response.LoginResult;
-import com.openilink.util.MessageHelper;
-import com.openilink.monitor.MonitorOptions;
+
+import com.github.wechat.ilink.sdk.ILinkClient;
+import com.github.wechat.ilink.sdk.ILinkClientBuilder;
+import com.github.wechat.ilink.sdk.core.config.ILinkConfig;
+import com.github.wechat.ilink.sdk.core.model.ImageItem;
+import com.github.wechat.ilink.sdk.core.model.MessageItem;
+import com.github.wechat.ilink.sdk.core.model.WeixinMessage;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.web.client.RestClient;
 import org.springframework.stereotype.Service;
 
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.io.IOException;
+import java.net.URI;
+import java.util.Base64;
+import java.util.List;
 
 @Slf4j
 @Service
 public class ILinkBotService {
 
     private final ILinkClient client;
-    private final WeatherService weatherService;    // 复用上午的
-    private final AtomicBoolean stopFlag = new AtomicBoolean(false);
-    private final AiChatService aiChatService;
+    private final WeatherService weatherService;
+    private final AiSdkChatService aiSdkChatService;
+    private final RestClient restClient = RestClient.create();
 
-    public ILinkBotService(WeatherService weatherService,AiChatService aiChatService) {
+    public ILinkBotService(WeatherService weatherService, AiSdkChatService aiSdkChatService) {
         this.weatherService = weatherService;
-        this.client = ILinkClient.builder().token("").build();
-        this.aiChatService = aiChatService;
-    }
+        this.aiSdkChatService = aiSdkChatService;
 
-    /** 启动：扫码登录 → 进入消息循环 */
-    public void start() {
-        // ① 扫码登录
-        LoginResult result = client.loginWithQR(new LoginCallbacks() {
-            @Override
-            public void onQRCode(String qrCodeUrl) {
-                log.info("请扫码登录：{}", qrCodeUrl);
-                // 实际跑的时候复制这个 URL 到浏览器打开，用微信扫码
-            }
-
-            @Override
-            public void onScanned() {
-                log.info("已扫码，请在微信上点击确认...");
-            }
-
-            @Override
-            public void onExpired(int attempt, int maxAttempts) {
-                log.warn("二维码过期，正在刷新 ({}/{})", attempt, maxAttempts);
-            }
-        });
-
-        if (!result.isConnected()) {
-            log.error("登录失败：{}", result.getMessage());
-            return;
-        }
-        log.info("登录成功！BotID={}", result.getBotId());
-
-        // ② 进入消息循环（阻塞，必须开独立线程）
-        MonitorOptions options = MonitorOptions.builder()
-                .onError(e -> log.warn("监听错误：{}", e.getMessage()))
-                .onSessionExpired(() -> log.error("会话过期，需重新扫码"))
+        ILinkConfig config = ILinkConfig.builder()
+                .heartbeatEnabled(true)
                 .build();
 
-        client.monitor(msg -> {
-            String text = MessageHelper.extractText(msg);
-            if (text == null || text.isBlank()) return;
+        this.client = ILinkClient.builder()
+                .config(config)
+                .onLogin(new com.github.wechat.ilink.sdk.core.listener.OnLoginListener() {
+                    @Override
+                    public void onLoginSuccess(com.github.wechat.ilink.sdk.core.login.LoginContext ctx) {
+                        log.info("登录成功！BotID={}", ctx.getBotId());
+                    }
 
-            log.info("收到消息 [{}]: {}", msg.getFromUserId(), text);
-
-            // ③ 解析命令 + 分发
-            String reply = dispatch(text);
-
-            // ④ 回复
-            client.push(msg.getFromUserId(), reply);
-            log.info("回复 [{}]: {}", msg.getFromUserId(), reply);
-        }, options, stopFlag);
+                    @Override
+                    public void onLoginFailure(Throwable throwable) {
+                        log.error("iLink 登录失败", throwable);
+                    }
+                })
+                .onDisconnect(new com.github.wechat.ilink.sdk.core.listener.OnDisconnectListener() {
+                    @Override public void onDisconnect(Throwable cause) { log.warn("iLink 连接断开"); }
+                    @Override public void onReconnectStart(int attempt) {}
+                    @Override public void onReconnectSuccess() {}
+                    @Override public void onReconnectFailed(Throwable cause) {}
+                })
+                .onMessage(messages -> handleMessages(messages))
+                .build();
     }
 
-    /** 命令分发 —— 复用你上午的那套逻辑 */
+    /** 启动：扫码登录 */
+    public void start() {
+        try {
+            String qrCodeUrl = client.executeLogin();
+            log.info("请扫码登录：{}", qrCodeUrl);
+        } catch (Exception e) {
+            log.error("iLink 登录失败", e);
+        }
+    }
+
+    /** 停止 */
+    public void stop() {
+        client.close();
+    }
+
+    /** 批量处理收到的消息 */
+    private void handleMessages(List<WeixinMessage> messages) {
+        for (WeixinMessage msg : messages) {
+            try {
+                handleSingleMessage(msg);
+            } catch (Exception e) {
+                log.error("处理消息失败", e);
+            }
+        }
+    }
+
+    /** 处理单条消息 */
+    private void handleSingleMessage(WeixinMessage msg) throws IOException {
+        String fromUserId = msg.getFrom_user_id();
+        List<MessageItem> items = msg.getItem_list();
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+
+        // ① 先找第一条文字和图片
+        String text = null;
+        MessageItem imageItem = null;
+        for (MessageItem item : items) {
+            if (item.getType() == 1 && item.getText_item() != null && text == null) {
+                text = item.getText_item().getText();
+            }
+            if (item.getType() == 2 && item.getImage_item() != null && imageItem == null) {
+                imageItem = item;
+            }
+        }
+
+        String reply;
+        if (imageItem != null) {
+            // ② 有图片 → 下载 → 转 base64 → 识图
+            log.info("收到图片消息 [{}]", fromUserId);
+            byte[] imageBytes = client.downloadImageFromMessageItem(imageItem);
+            String base64 = Base64.getEncoder().encodeToString(imageBytes);
+            String prompt = (text == null || text.isBlank()) ? "描述一下这张图片" : text;
+            reply = aiSdkChatService.chatWithImageBase64(prompt, base64);
+        } else {
+            // ③ 纯文字
+            if (text == null || text.isBlank()) return;
+            log.info("收到文字消息 [{}]: {}", fromUserId, text);
+            reply = handleText(fromUserId, text);
+        }
+
+        // ④ 回复文字
+        client.sendText(fromUserId, reply);
+        log.info("回复 [{}]: {}", fromUserId, reply);
+    }
+
+    /** 处理纯文字 */
+    private String handleText(String fromUserId, String raw) {
+        if (raw.startsWith("/")) {
+            return dispatch(raw);
+        }
+        if (raw.contains("生成图片") || raw.contains("画")) {
+            String prompt = raw.replace("生成图片", "")
+                    .replace("画", "")
+                    .replace("一张", "")
+                    .trim();
+            String imageUrl = aiSdkChatService.generateImage(prompt);
+            return sendGeneratedImageBack(fromUserId, imageUrl);
+        }
+        return aiSdkChatService.chat(raw);
+    }
+
+    /** 下载生成的图片并通过微信发回 */
+    private String sendGeneratedImageBack(String toUserId, String imageUrl) {
+        try {
+            byte[] imageBytes = restClient.get()
+                    .uri(URI.create(imageUrl))
+                    .retrieve()
+                    .body(byte[].class);
+
+            if (imageBytes == null || imageBytes.length == 0) {
+                return "图片下载失败，URL：" + imageUrl;
+            }
+
+            client.sendImage(toUserId, imageBytes, "generated.png", "");
+            return "图片已生成并发送，请查收。";
+        } catch (Exception e) {
+            log.error("发送生成图片失败，url={}", imageUrl, e);
+            return "图片生成成功但发送失败，URL：" + imageUrl;
+        }
+    }
+
+    /** 命令分发 */
     private String dispatch(String raw) {
         String[] parts = raw.trim().split("\\s+", 2);
         String command = parts[0].toLowerCase();
         String argument = parts.length > 1 ? parts[1] : "";
 
         return switch (command) {
-            case "/help"    -> "命令：help / version / status / weather <城市名>";
+            case "/help" -> "命令：/help /version /status /weather <城市名>";
             case "/version" -> "版本：1.0.0";
-            case "/status"  -> "运行中，Java 21 + Spring Boot 4.1";
+            case "/status" -> "运行中，Java 21 + Spring Boot 4.1";
             case "/weather" -> argument.isBlank()
-                    ? "请带城市名，如：weather 北京"
+                    ? "请带城市名，如：/weather 北京"
                     : weatherService.getWeather(argument);
             case "/qwen" -> argument.isBlank()
-                    ? "请带内容，如：ai 帮我写首诗"
-                    : aiChatService.chat(argument);
-            default        -> "未知命令，回复 help 查看帮助";
+                    ? "请带内容，如：/qwen 帮我写首诗"
+                    : aiSdkChatService.chat(argument);
+            default -> "未知命令，回复 /help 查看帮助";
         };
-    }
-
-    /** 停止监听 */
-    public void stop() {
-        stopFlag.set(true);
     }
 }

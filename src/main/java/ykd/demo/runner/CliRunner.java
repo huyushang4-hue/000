@@ -5,6 +5,7 @@ import org.springframework.boot.CommandLineRunner;
 
 import org.springframework.stereotype.Component;
 import ykd.demo.service.AiChatService;
+import ykd.demo.service.AiSdkChatService;
 import ykd.demo.service.WeatherService;
 import java.util.Scanner;
 
@@ -14,11 +15,11 @@ public class CliRunner implements CommandLineRunner {
     private static final String VERSION ="1.0.0";
     private final long startTime;
     private final WeatherService weatherService; // final 保证注入后不被篡改
-    private final AiChatService aiChatService;
-    public CliRunner(WeatherService weatherService,AiChatService aiChatService) {
+    private final AiSdkChatService aiSdkChatService;
+    public CliRunner(WeatherService weatherService,AiSdkChatService aiSdkChatService) {
         this.weatherService = weatherService;
         this.startTime = System.currentTimeMillis();
-        this.aiChatService=aiChatService;
+        this.aiSdkChatService=aiSdkChatService;
     }
 
 
@@ -53,7 +54,7 @@ public class CliRunner implements CommandLineRunner {
                                 System.out.print("你> ");
                                 String msg = scanner.nextLine().trim();
                                 if (msg.equalsIgnoreCase("exit")) break;
-                                String result1 = aiChatService.chat(msg);
+                                String result1 = aiSdkChatService.chat(msg);
                                 System.out.println("AI> " + result1);
                             }
                             break;
