@@ -80,13 +80,13 @@ public class ILinkBotService {
         String argument = parts.length > 1 ? parts[1] : "";
 
         return switch (command) {
-            case "help"    -> "命令：help / version / status / weather <城市名>";
-            case "version" -> "版本：1.0.0";
-            case "status"  -> "运行中，Java 21 + Spring Boot 4.1";
-            case "weather" -> argument.isBlank()
+            case "/help"    -> "命令：help / version / status / weather <城市名>";
+            case "/version" -> "版本：1.0.0";
+            case "/status"  -> "运行中，Java 21 + Spring Boot 4.1";
+            case "/weather" -> argument.isBlank()
                     ? "请带城市名，如：weather 北京"
                     : weatherService.getWeather(argument);
-            case "ai" -> argument.isBlank()
+            case "/qwen" -> argument.isBlank()
                     ? "请带内容，如：ai 帮我写首诗"
                     : aiChatService.chat(argument);
             default        -> "未知命令，回复 help 查看帮助";

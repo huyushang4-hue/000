@@ -35,19 +35,19 @@ public class CliRunner implements CommandLineRunner {
 
                     switch (line) {
 
-                        case "help":
+                        case "/help":
                             showHelp();
                             break;
-                        case "version":
+                        case "/version":
                             System.out.println("程序版本：" + VERSION);
                             break;
-                        case "status":
+                        case "/status":
                             showStatus();
                             break;
-                        case "test":
+                        case "/test":
                             int x=1/0;
                             break;
-                        case "qwen": {
+                        case "/qwen": {
                             System.out.println("进入聊天模式，输入 exit 退出");
                             while (true) {
                                 System.out.print("你> ");
@@ -58,13 +58,13 @@ public class CliRunner implements CommandLineRunner {
                             }
                             break;
                         }
-                        case "weather":
+                        case "/weather":
                             System.out.print("请输入城市名：");
                             String city = scanner.nextLine().trim();
                             String result = weatherService.getWeather(city);
                             System.out.println(result);
                             break;
-                        case "exit":
+                        case "/exit":
                             System.out.println("再见！");
                             return;   // 结束 run()，程序退出
                         default:
