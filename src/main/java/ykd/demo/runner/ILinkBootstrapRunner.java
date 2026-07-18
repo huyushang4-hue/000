@@ -3,9 +3,11 @@ package ykd.demo.runner;
 import com.github.wechat.ilink.sdk.ILinkClient;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import ykd.demo.service.ILinkBotService;
 
+@Order(1)
 @Slf4j
 @Component
 public class ILinkBootstrapRunner implements CommandLineRunner {

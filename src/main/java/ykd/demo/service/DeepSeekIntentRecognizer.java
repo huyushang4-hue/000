@@ -20,7 +20,7 @@ public class DeepSeekIntentRecognizer {
                 .build();
     }
     public Intent recognize(String input) {
-        // 防御
+        // 判空
         if (input == null || input.isBlank()) {
             return Intent.UNKNOWN;
         }
@@ -32,7 +32,7 @@ public class DeepSeekIntentRecognizer {
             "messages": [
                 {
                     "role": "system",
-                    "content": "你是一个意图识别助手。用户会发一段文字，请判断用户的意图。只返回一个词：CHAT（聊天）、GENERATE_IMAGE（生成图片）、WEATHER（查天气）、TTS（语音）、UNKNOWN（无法判断）。不要返回其他内容。"
+                    "content": "你是一个意图识别助手。用户会发一段文字，请判断用户的意图。只返回一个词：CHAT（聊天）、GENERATE_IMAGE（生成图片）、WEATHER（查天气）、TTS（语音）、INT_SEARCH（需要联网搜索当前信息，如查询最新新闻、实时股价、今日热点等需要实时数据的问题）、UNKNOWN（无法判断）。不要返回其他内容。"
                 },
                 {
                     "role": "user",
@@ -59,7 +59,6 @@ public class DeepSeekIntentRecognizer {
             JsonNode root = mapper.readTree(responseJson);
 
             // 提取 choices[0].message.content
-            // Jackson 3 推荐用 .path() 代替弃用的 .get() 和 .at()
             String intentStr = root.path("choices")
                     .get(0)
                     .path("message")
@@ -75,6 +74,7 @@ public class DeepSeekIntentRecognizer {
                 case "GENERATE_IMAGE"  -> Intent.GENERATE_IMAGE;
                 case "WEATHER"         -> Intent.WEATHER;
                 case "TTS"             -> Intent.TTS;
+                case "INT_SEARCH"      -> Intent.INT_SEARCH;
                 default                -> Intent.UNKNOWN;
             };
 
