@@ -10,12 +10,20 @@ import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesis;
 import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesisParam;
 import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesisResult;
 import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesisOutput;
+// 语音合成相关（TTS）——已改用 MultiModalConversation API
+// import com.alibaba.dashscope.audio.tts.SpeechSynthesizer;
+// import com.alibaba.dashscope.audio.tts.SpeechSynthesisParam;
+// import java.nio.ByteBuffer;
 
 import com.alibaba.dashscope.exception.NoApiKeyException;
 import com.alibaba.dashscope.exception.UploadFileException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClient;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
+import java.util.Base64;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -240,6 +248,110 @@ public class AiSdkChatService {
         } catch (ApiException | NoApiKeyException e) {
             log.error("调用文生图失败", e);
             return "图片生成失败，请稍后再试";
+        }
+    }
+
+    /**
+     * 文字转语音（TTS）
+     * @param text 要合成语音的文字
+     * @return 音频字节数组（MP3 格式），失败返回空数组
+     */
+    public byte[] textToSpeech(String text) {
+        if (text == null || text.isBlank()) {
+            return new byte[0];
+        }
+
+        log.info("TTS 合成语音，text={}", text);
+
+        try {
+            // 阿里云官方推荐的调用方式：用 MultiModalConversation
+            MultiModalConversationParam param = MultiModalConversationParam.builder()
+                    .apiKey(apiKey)
+                    .model("qwen3-tts-flash")
+                    .text(text)
+                    .voice(com.alibaba.dashscope.aigc.multimodalconversation.AudioParameters.Voice.CHERRY)
+                    .build();
+
+            MultiModalConversationResult result = conversation.call(param);
+
+            // 从结果中获取音频 URL
+            String audioUrl = result.getOutput().getAudio().getUrl();
+            if (audioUrl == null || audioUrl.isBlank()) {
+                log.warn("TTS 返回空 URL");
+                return new byte[0];
+            }
+
+            log.info("TTS 合成成功，audioUrl={}", audioUrl);
+
+            // 用 URL.openStream() 下载，避免二次编码导致 OSS 签名失败
+            try (java.io.InputStream in = new java.net.URL(audioUrl).openStream()) {
+                byte[] audioBytes = in.readAllBytes();
+                log.info("TTS 音频下载成功，大小={} 字节", audioBytes.length);
+                return audioBytes;
+            }
+
+        } catch (Exception e) {
+            log.error("TTS 合成失败", e);
+            return new byte[0];
+        }
+    }
+
+    /**
+     * 语音转文字（ASR）
+     * @param audioBytes 音频字节数据（微信发来的语音）
+     * @return 识别出的文字
+     */
+    public String speechToText(byte[] audioBytes) {
+        if (audioBytes == null || audioBytes.length == 0) {
+            return "";
+        }
+
+        log.info("ASR 开始识别语音，大小={} 字节", audioBytes.length);
+
+        try {
+            // qwen3-asr-flash 通过 OpenAI 兼容接口支持 base64 音频输入
+            String base64Audio = Base64.getEncoder().encodeToString(audioBytes);
+
+            String requestBody = String.format("""
+                {
+                    "model": "qwen3-asr-flash",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "audio",
+                                    "audio": "data:audio/wav;base64,%s"
+                                }
+                            ]
+                        }
+                    ]
+                }
+                """, base64Audio);
+
+            RestClient asrClient = RestClient.builder()
+                    .baseUrl("https://dashscope.aliyuncs.com")
+                    .build();
+
+            String responseJson = asrClient.post()
+                    .uri("/compatible-mode/v1/chat/completions")
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + apiKey)
+                    .body(requestBody)
+                    .retrieve()
+                    .body(String.class);
+
+            // 解析响应
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode root = mapper.readTree(responseJson);
+            String text = root.path("choices").get(0).path("message").path("content").asText();
+
+            log.info("ASR 识别结果：{}", text);
+            return text;
+
+        } catch (Exception e) {
+            log.error("ASR 识别失败", e);
+            return "";
         }
     }
 }

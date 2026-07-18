@@ -24,12 +24,12 @@ public class ILinkBotService {
     private final ILinkClient client;
     private final WeatherService weatherService;
     private final AiSdkChatService aiSdkChatService;
-    private final IntentRecognizer intentRecognizer;
+    private final DeepSeekIntentRecognizer intentRecognizer;
     private final RestClient restClient = RestClient.create();
 
     public ILinkBotService(WeatherService weatherService,
                            AiSdkChatService aiSdkChatService,
-                           IntentRecognizer intentRecognizer) {
+                           DeepSeekIntentRecognizer intentRecognizer) {
         this.weatherService = weatherService;
         this.aiSdkChatService = aiSdkChatService;
         this.intentRecognizer = intentRecognizer;
@@ -99,6 +99,7 @@ public class ILinkBotService {
         // ① 先找第一条文字和图片
         String text = null;
         MessageItem imageItem = null;
+        MessageItem voiceItem = null;
         for (MessageItem item : items) {
             if (item.getType() == 1 && item.getText_item() != null && text == null) {
                 text = item.getText_item().getText();
@@ -106,9 +107,13 @@ public class ILinkBotService {
             if (item.getType() == 2 && item.getImage_item() != null && imageItem == null) {
                 imageItem = item;
             }
+            if (item.getType() == 3 && voiceItem == null) {
+                voiceItem = item;  // 语音消息
+            }
         }
 
         String reply;
+        String voiceText = null;
         if (imageItem != null) {
             // ② 有图片 → 下载 → 转 base64 → 识图
             log.info("收到图片消息 [{}]", fromUserId);
@@ -116,16 +121,54 @@ public class ILinkBotService {
             String base64 = Base64.getEncoder().encodeToString(imageBytes);
             String prompt = (text == null || text.isBlank()) ? "描述一下这张图片" : text;
             reply = aiSdkChatService.chatWithImageBase64(prompt, base64);
+        } else if (voiceItem != null) {
+            // ③ 语音消息 → ASR → AI 聊天 → TTS → 回复
+            log.info("收到语音消息 [{}]", fromUserId);
+            // 获取语音消息的 Media 对象
+            com.github.wechat.ilink.sdk.core.model.VoiceItem voiceDetail = voiceItem.getVoice_item();
+            
+            // 方案 A：如果 SDK 自带语音识别结果，直接用
+            if (voiceDetail != null && voiceDetail.getText() != null && !voiceDetail.getText().isBlank()) {
+                voiceText = voiceDetail.getText();
+                log.info("语音消息自带识别文本：{}", voiceText);
+            }
+            
+            if (voiceText == null) {
+                // 方案 B：自己调 ASR
+                byte[] voiceBytes = client.downloadVoiceFromMessageItem(voiceItem);
+                voiceText = aiSdkChatService.speechToText(voiceBytes);
+            }
+            
+            if (voiceText == null || voiceText.isBlank()) {
+                client.sendText(fromUserId, "抱歉，没听清你说什么，可以再说一遍吗？");
+                return;
+            }
+
+            log.info("语音识别为：{}", voiceText);
+
+            // AI 聊天
+            String aiReply = aiSdkChatService.chat(voiceText);
+
+            // TTS 转语音发回
+            byte[] replyAudio = aiSdkChatService.textToSpeech(aiReply);
+            if (replyAudio.length > 0) {
+                client.sendFile(fromUserId, replyAudio, "语音回复.wav", "");
+            } else {
+                client.sendText(fromUserId, aiReply);
+            }
+            return;
         } else {
-            // ③ 纯文字
+            // ④ 纯文字
             if (text == null || text.isBlank()) return;
             log.info("收到文字消息 [{}]: {}", fromUserId, text);
             reply = handleText(fromUserId, text);
         }
 
-        // ④ 回复文字
-        client.sendText(fromUserId, reply);
-        log.info("回复 [{}]: {}", fromUserId, reply);
+        // ④ 回复文字（如果 reply 为 null，不发——TTS 场景已单独发了语音）
+        if (reply != null) {
+            client.sendText(fromUserId, reply);
+            log.info("回复 [{}]: {}", fromUserId, reply);
+        }
     }
 
     /** 处理纯文字 → 意图识别 → 分发 */
@@ -137,6 +180,7 @@ public class ILinkBotService {
             case GENERATE_IMAGE -> handleGenerateImage(fromUserId, raw);
             case WEATHER        -> handleWeather(raw);
             case CHAT           -> aiSdkChatService.chat(raw);
+            case TTS            -> handleTts(fromUserId, raw);
             case UNKNOWN        -> "没听懂，可以再说一遍吗？";
         };
     }
@@ -183,5 +227,29 @@ public class ILinkBotService {
             log.error("发送生成图片失败，url={}", imageUrl, e);
             return "图片生成成功但发送失败，URL：" + imageUrl;
         }
+    }
+
+    /** TTS：AI 生成回复 → 转语音 → 发语音气泡，不返回文字 */
+    private String handleTts(String fromUserId, String raw) {
+        // ① AI 生成回复
+        String aiReply = aiSdkChatService.chat(raw);
+
+        // ② 转语音
+        byte[] audioBytes = aiSdkChatService.textToSpeech(aiReply);
+        if (audioBytes.length == 0) {
+            return "语音合成失败，请稍后重试";
+        }
+
+        // ③ 发语音文件（微信语音气泡受限，改为音频文件，用户可下载播放）
+        try {
+            log.info("发送语音文件，大小={} 字节", audioBytes.length);
+            client.sendFile(fromUserId, audioBytes, "语音回复.wav", "点击播放语音回复");
+        } catch (Exception e) {
+            log.error("发送语音文件失败", e);
+            return "语音发送失败：" + aiReply;
+        }
+
+        // ④ 不返回文字（返回 null 让调用者跳过发文字）
+        return null;
     }
 }
