@@ -16,6 +16,8 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.Base64;
 import java.util.List;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 @Slf4j
 @Service
@@ -189,60 +191,105 @@ public class ILinkBotService {
         };
     }
 
-    /** 生图意图：清洗关键词 → 调模型 → 发微信 */
+    /** 生图意图：AI 润色提示词 → 调模型 → 发微信 */
     private String handleGenerateImage(String fromUserId, String raw) {
-        String prompt = raw
-                .replace("生成图片", "")
-                .replace("画", "")
-                .replace("一张", "")
-                .replace("一个", "")
-                .replace("一只", "")
-                .replace("给我", "")
-                .replace("帮我", "")
-                .trim();
-        String imageUrl = aiSdkChatService.generateImage(prompt);
+        String polishedPrompt = polishPromptWithDeepSeek(raw);
+        log.info("润色后提示词：{}", polishedPrompt);
+
+        String imageUrl = aiSdkChatService.generateImage(polishedPrompt);
         return sendGeneratedImageBack(fromUserId, imageUrl);
     }
 
-    /** 天气意图：提取城市名 → 调 WeatherService → AI 整理回复 */
-    private String handleWeather(String raw) {
-        // 去掉 /weather 前缀（如果有的话）
-        String argument = raw.replaceFirst("/weather", "").trim();
+    /** DeepSeek 润色生图提示词 */
+    private String polishPromptWithDeepSeek(String raw) {
+        try {
+            String requestBody = """
+            {
+                "model": "deepseek-v4-flash",
+                "messages": [
+                    {"role": "system", "content": "你是一个 prompt 优化助手。用户想生成一张图片，请提取核心描述，去除命令词（画、生成、帮我等），适当润色增加细节和画面感，直接返回润色后的英文提示词，不要加解释。"},
+                    {"role": "user", "content": "%s"}
+                ]
+            }
+            """.formatted(raw.replace("\"", "\\\""));
 
-        // 去掉自然语言中的干扰词
-        argument = argument
-                .replace("今天", "")
-                .replace("明天", "")
-                .replace("后天", "")
-                .replace("天气", "")
-                .replace("怎么样", "")
-                .replace("什么", "")
-                .replace("的", "")
-                .replace("呢", "")
-                .replace("啊", "")
-                .replace("呀", "")
-                .replace("?", "")
-                .replace("？", "")
-                .replace("联网搜一下", "")
-                .replace("联网搜索", "")
-                .replace("搜索", "")
-                .trim();
+            String responseJson = restClient.post()
+                    .uri("https://api.deepseek.com/chat/completions")
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + System.getenv("DEEPSEEK_API_KEY"))
+                    .body(requestBody)
+                    .retrieve()
+                    .body(String.class);
+
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode root = mapper.readTree(responseJson);
+            return root.path("choices").get(0).path("message").path("content").asText().trim();
+
+        } catch (Exception e) {
+            log.warn("DeepSeek 润色失败，使用原始描述", e);
+            return raw;
+        }
+    }
+
+    /** 天气意图：DeepSeek 提取城市名 → 调 WeatherService → AI 整理回复 */
+    private String handleWeather(String raw) {
+        String argument = extractCityWithDeepSeek(raw);
 
         if (argument.isBlank()) {
             return "请带城市名，如：/weather 北京";
         }
 
-        // 调高德 API 拿天气数据
+        log.info("提取城市名：{}", argument);
+
         String weatherData = weatherService.getWeather(argument);
 
-        // 查天气失败则直接返回错误
         if (weatherData.startsWith("错误")) {
             return weatherData;
         }
 
-        // 让 AI 整理成自然语言，同时存入对话历史
-        // 这样后面问"穿什么"就能关联
-        return aiSdkChatService.chat("查询天气结果：" + weatherData + "，请用自然语言告诉我");
+        // 把天气数据和用户原问题一起发给 AI，让 AI 结合问题回答
+        return aiSdkChatService.chat("天气数据：" + weatherData + "\n用户问题：" + raw + "\n请根据天气数据回答用户的问题");
+    }
+
+    /** DeepSeek 提取城市名 */
+    private String extractCityWithDeepSeek(String raw) {
+        String input = raw.replaceFirst("/weather", "").trim();
+        if (input.isBlank()) {
+            return "";
+        }
+
+        try {
+            String requestBody = """
+            {
+                "model": "deepseek-v4-flash",
+                "messages": [
+                    {"role": "system", "content": "从用户的话中提取中国城市名，只返回城市名本身，不要任何解释。如果找不到城市名，返回空。"},
+                    {"role": "user", "content": "%s"}
+                ]
+            }
+            """.formatted(input.replace("\"", "\\\""));
+
+            String responseJson = restClient.post()
+                    .uri("https://api.deepseek.com/chat/completions")
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + System.getenv("DEEPSEEK_API_KEY"))
+                    .body(requestBody)
+                    .retrieve()
+                    .body(String.class);
+
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode root = mapper.readTree(responseJson);
+            String city = root.path("choices").get(0).path("message").path("content").asText().trim();
+
+            if (city.isBlank() || city.equals("空")) {
+                return "";
+            }
+            return city;
+
+        } catch (Exception e) {
+            log.warn("DeepSeek 提取城市名失败", e);
+            return input;
+        }
     }
 
     /** 下载生成的图片并通过微信发回 */
@@ -267,16 +314,13 @@ public class ILinkBotService {
 
     /** TTS：AI 生成回复 → 转语音 → 发语音文件，不返回文字 */
     private String handleTts(String fromUserId, String raw) {
-        // ① AI 生成回复
         String aiReply = aiSdkChatService.chat(raw);
 
-        // ② 转语音
         byte[] audioBytes = aiSdkChatService.textToSpeech(aiReply);
         if (audioBytes.length == 0) {
             return "语音合成失败，请稍后重试";
         }
 
-        // ③ 发语音文件
         try {
             log.info("发送语音文件，大小={} 字节", audioBytes.length);
             client.sendFile(fromUserId, audioBytes, "语音回复.wav", "点击播放语音回复");
@@ -285,16 +329,12 @@ public class ILinkBotService {
             return "语音发送失败：" + aiReply;
         }
 
-        // ④ 不返回文字（返回 null 让调用者跳过发文字）
         return null;
     }
 
     /** 搜索意图：调 Tavily → AI 整理回复 */
     private String handleSearch(String raw) {
-        // ① Tavily 搜索
         String searchResult = searchService.search(raw);
-
-        // ② 让 AI 基于搜索结果回答
         return aiSdkChatService.chat("搜索结果如下：\n" + searchResult + "\n请根据以上搜索结果回答用户的问题：" + raw);
     }
 }
