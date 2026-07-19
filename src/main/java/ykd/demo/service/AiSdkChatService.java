@@ -41,6 +41,33 @@ public class AiSdkChatService {
         this.imageSynthesis = new ImageSynthesis();
     }
 
+    /** 获取最近 N 轮对话历史的文字摘要（用于意图识别） */
+    public String getRecentHistory(int count) {
+        if (messages.isEmpty()) {
+            return "";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        int start = Math.max(0, messages.size() - count);
+        for (int i = start; i < messages.size(); i++) {
+            MultiModalMessage msg = messages.get(i);
+            String role = msg.getRole();
+            String text = "";
+            List<Map<String, Object>> contentList = msg.getContent();
+            if (contentList != null && !contentList.isEmpty()) {
+                Object textObj = contentList.get(0).get("text");
+                if (textObj != null) {
+                    text = textObj.toString();
+                }
+            }
+            // 只输出有文字的消息（图片消息没有 text 字段，跳过）
+            if (!text.isBlank()) {
+                sb.append(role).append(": ").append(text).append("\n");
+            }
+        }
+        return sb.toString();
+    }
+
     /** 纯文字对话 */
     public String chat(String userMessage) {
         if (userMessage == null || userMessage.isBlank()) {

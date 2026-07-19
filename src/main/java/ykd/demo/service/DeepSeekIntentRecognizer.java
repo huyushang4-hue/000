@@ -19,11 +19,17 @@ public class DeepSeekIntentRecognizer {
                 .baseUrl(BASE_URL)
                 .build();
     }
-    public Intent recognize(String input) {
+    public Intent recognize(String input, String historyContext) {
         // 判空
         if (input == null || input.isBlank()) {
             return Intent.UNKNOWN;
         }
+
+        // 构建 system prompt（含历史上下文，需在外面拼接避免破坏 JSON）
+        String historyPart = (historyContext == null || historyContext.isBlank())
+                ? ""
+                : "以下是最近的对话历史：\n" + historyContext + "\n\n";
+        String systemContent = historyPart + "结合上面的对话历史（如果有），判断用户最新一条消息的意图。只返回一个词：CHAT（聊天）、GENERATE_IMAGE（生成图片）、WEATHER（查天气）、TTS（语音）、INT_SEARCH（需要联网搜索当前信息，如查询最新新闻、实时股价、今日热点等需要实时数据的问题）、UNKNOWN（无法判断）。不要返回其他内容。";
 
         // 1. 构造请求体（DeepSeek 兼容 OpenAI 格式）
         String requestBody = """
@@ -32,7 +38,7 @@ public class DeepSeekIntentRecognizer {
             "messages": [
                 {
                     "role": "system",
-                    "content": "你是一个意图识别助手。用户会发一段文字，请判断用户的意图。只返回一个词：CHAT（聊天）、GENERATE_IMAGE（生成图片）、WEATHER（查天气）、TTS（语音）、INT_SEARCH（需要联网搜索当前信息，如查询最新新闻、实时股价、今日热点等需要实时数据的问题）、UNKNOWN（无法判断）。不要返回其他内容。"
+                    "content": "%s"
                 },
                 {
                     "role": "user",
@@ -40,7 +46,9 @@ public class DeepSeekIntentRecognizer {
                 }
             ]
         }
-        """.formatted(input.replace("\"", "\\\""));
+        """.formatted(
+                systemContent.replace("\"", "\\\"").replace("\n", "\\n"),
+                input.replace("\"", "\\\""));
 
         // 2. 发请求
         String responseJson = restClient.post()
