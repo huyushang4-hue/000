@@ -5,6 +5,6 @@ public enum Intent {
     GENERATE_IMAGE, // 生成图片
     WEATHER,        // 查天气
     UNKNOWN,        // 未知/没听懂
-    TTS,             //语音
-    INT_SEARCH      //联网搜索
+    TTS,            // 语音
+    INT_SEARCH,     // 联网搜索
 }

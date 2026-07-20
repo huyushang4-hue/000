@@ -1,6 +1,5 @@
 package ykd.demo.service;
 
-
 import com.github.wechat.ilink.sdk.ILinkClient;
 import com.github.wechat.ilink.sdk.ILinkClientBuilder;
 import com.github.wechat.ilink.sdk.core.config.ILinkConfig;
@@ -347,11 +346,11 @@ public class ILinkBotService {
         // 先用 DeepSeek 从原文+上下文提取搜索关键词
         String searchQuery = extractSearchQuery(raw);
         log.info("提取的搜索关键词：{}", searchQuery);
-        
+
         if (searchQuery.isBlank()) {
             return "请告诉我你想搜索什么";
         }
-        
+
         String searchResult = searchService.search(searchQuery);
         return aiSdkChatService.chat("搜索结果如下：\n" + searchResult + "\n请根据以上搜索结果回答用户的问题：" + raw);
     }
@@ -362,7 +361,7 @@ public class ILinkBotService {
             // 带上对话历史，让 DeepSeek 提取真正想搜的内容
             String history = aiSdkChatService.getRecentHistory(6);
             String context = (history == null || history.isBlank()) ? "" : "对话历史：\n" + history + "\n\n";
-            
+
             String requestBody = """
             {
                 "model": "deepseek-v4-flash",
@@ -372,7 +371,7 @@ public class ILinkBotService {
                 ]
             }
             """.formatted((context + "用户最新消息：" + raw).replace("\"", "\\\"").replace("\n", "\\n"));
-            
+
             String responseJson = restClient.post()
                     .uri("https://api.deepseek.com/chat/completions")
                     .header("Content-Type", "application/json")
@@ -380,17 +379,17 @@ public class ILinkBotService {
                     .body(requestBody)
                     .retrieve()
                     .body(String.class);
-            
+
             ObjectMapper mapper = new ObjectMapper();
             JsonNode root = mapper.readTree(responseJson);
             String keywords = root.path("choices").get(0).path("message").path("content").asText().trim();
-            
+
             // 如果返回的是无效内容，用原文兜底
             if (keywords.isBlank() || keywords.length() > 100) {
                 return raw;
             }
             return keywords;
-            
+
         } catch (Exception e) {
             log.warn("提取搜索关键词失败，使用原文", e);
             return raw;

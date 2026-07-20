@@ -30,16 +30,63 @@ import java.util.Map;
 public class AiSdkChatService {
 
     private final MultiModalConversation conversation;
-    private final List<MultiModalMessage> messages;
+    private List<MultiModalMessage> messages;
     private final String apiKey;
     private final ImageSynthesis imageSynthesis;
+    private final RestClient deepSeekClient;
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    /** 最近一次请求的 Token 用量统计（格式化好的字符串） */
+    private String lastUsage = "";
+
+    /** 超过多少轮对话后触发摘要压缩 */
+    private static final int MAX_ROUNDS = 50;
+    /** 压缩后保留的最近轮数 */
+    private static final int KEEP_ROUNDS = 10;
 
     public AiSdkChatService() {
         this.apiKey = System.getenv("DASHSCOPE_API_KEY");
         this.conversation = new MultiModalConversation();
         this.messages = new ArrayList<>();
         this.imageSynthesis = new ImageSynthesis();
+        this.deepSeekClient = RestClient.builder()
+                .baseUrl("https://api.deepseek.com")
+                .build();
     }
+
+    // ==================== Token 用量统计 ====================
+
+    /** 获取上次请求的 Token 用量（格式化文本） */
+    public String getLastUsage() {
+        return lastUsage;
+    }
+
+    /** 从 API 结果中提取 Token 用量并记录 */
+    private void recordUsage(MultiModalConversationResult result) {
+        try {
+            JsonNode usage = mapper.valueToTree(result.getUsage());
+            int inputTokens = usage.path("input_tokens").asInt(0);
+            int outputTokens = usage.path("output_tokens").asInt(0);
+            int totalTokens = usage.path("total_tokens").asInt(0);
+            int cachedTokens = usage.path("prompt_tokens_details").path("cached_tokens").asInt(0);
+
+            double cacheRate = inputTokens > 0
+                    ? (double) cachedTokens / inputTokens * 100
+                    : 0;
+
+            lastUsage = String.format(
+                    "📊 Token 用量 | 输入 %d | 输出 %d | 总计 %d | 缓存命中 %d (%.1f%%)",
+                    inputTokens, outputTokens, totalTokens, cachedTokens, cacheRate);
+
+            log.info("Token 用量：{}", lastUsage);
+
+        } catch (Exception e) {
+            log.warn("提取 Token 用量失败", e);
+            lastUsage = "";
+        }
+    }
+
+    // ==================== 工具方法 ====================
 
     /** 获取最近 N 轮对话历史的文字摘要（用于意图识别） */
     public String getRecentHistory(int count) {
@@ -60,7 +107,6 @@ public class AiSdkChatService {
                     text = textObj.toString();
                 }
             }
-            // 只输出有文字的消息（图片消息没有 text 字段，跳过）
             if (!text.isBlank()) {
                 sb.append(role).append(": ").append(text).append("\n");
             }
@@ -68,18 +114,37 @@ public class AiSdkChatService {
         return sb.toString();
     }
 
+    /** 从结果中提取文字 */
+    private String extractText(MultiModalConversationResult result) {
+        List<Map<String, Object>> contentList = result.getOutput()
+                .getChoices()
+                .get(0)
+                .getMessage()
+                .getContent();
+
+        for (Map<String, Object> item : contentList) {
+            if (item.containsKey("text")) {
+                Object textObj = item.get("text");
+                return textObj != null ? textObj.toString() : "";
+            }
+        }
+        return "";
+    }
+
+    // ==================== 核心对话方法 ====================
+
     /** 纯文字对话 */
     public String chat(String userMessage) {
         if (userMessage == null || userMessage.isBlank()) {
             return "请输入想说的话";
         }
 
-        log.info("SDK 向多模态模型发送文字请求，userMessage={}", userMessage);
-
-        // 在用户消息前加时间戳（不影响缓存，因为它属于用户消息的一部分）
+        // 在用户消息前加时间戳
         String timedMessage = "[" + java.time.LocalDateTime.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("yyyy年M月d日 HH:mm")) + "] "
                 + userMessage;
+
+        log.info("SDK 向多模态模型发送文字请求，userMessage={}", userMessage);
 
         try {
             MultiModalMessage userMsg = MultiModalMessage.builder()
@@ -100,6 +165,9 @@ public class AiSdkChatService {
             MultiModalConversationResult result = conversation.call(param);
             String reply = extractText(result);
 
+            // 记录 Token 用量
+            recordUsage(result);
+
             MultiModalMessage assistantMsg = MultiModalMessage.builder()
                     .role(Role.ASSISTANT.getValue())
                     .content(Collections.singletonList(
@@ -108,6 +176,9 @@ public class AiSdkChatService {
                     .build();
 
             messages.add(assistantMsg);
+
+            // 检查是否需要压缩上下文
+            trimContext();
 
             return reply;
 
@@ -126,14 +197,11 @@ public class AiSdkChatService {
         log.info("SDK 向多模态模型发送搜索请求，userMessage={}", userMessage);
 
         try {
-            // 建立新消息列表：先加系统消息强制联网搜索，再加用户消息
-            // 注意：不要用 this.messages（全局对话历史），否则搜完污染历史
-            
-            // 系统消息：强制搜索
             MultiModalMessage systemMsg = MultiModalMessage.builder()
                     .role(Role.SYSTEM.getValue())
                     .content(Collections.singletonList(
-                            Collections.singletonMap("text", "你是一个需要实时信息的助手。对于用户的问题，你必须使用搜索功能获取最新数据，绝对不能依赖自己的知识库回答。如果搜索不到，请明确告知。")
+                            Collections.singletonMap("text",
+                                    "你是一个需要实时信息的助手。对于用户的问题，你必须使用搜索功能获取最新数据，绝对不能依赖自己的知识库回答。如果搜索不到，请明确告知。")
                     ))
                     .build();
 
@@ -147,7 +215,7 @@ public class AiSdkChatService {
             // 构造搜索专用消息列表（不污染全局对话历史）
             List<MultiModalMessage> searchMessages = new ArrayList<>();
             searchMessages.add(systemMsg);
-            searchMessages.addAll(this.messages); // 把历史也带上
+            searchMessages.addAll(this.messages);
             searchMessages.add(userMsg);
 
             MultiModalConversationParam param = MultiModalConversationParam.builder()
@@ -159,6 +227,9 @@ public class AiSdkChatService {
 
             MultiModalConversationResult result = conversation.call(param);
             String reply = extractText(result);
+
+            // 记录 Token 用量
+            recordUsage(result);
 
             // 只把用户消息和 AI 回复存入全局历史
             messages.add(userMsg);
@@ -207,6 +278,9 @@ public class AiSdkChatService {
             MultiModalConversationResult result = conversation.call(param);
             String reply = extractText(result);
 
+            // 记录 Token 用量
+            recordUsage(result);
+
             MultiModalMessage assistantMsg = MultiModalMessage.builder()
                     .role(Role.ASSISTANT.getValue())
                     .content(Collections.singletonList(
@@ -253,6 +327,9 @@ public class AiSdkChatService {
             MultiModalConversationResult result = conversation.call(param);
             String reply = extractText(result);
 
+            // 记录 Token 用量
+            recordUsage(result);
+
             MultiModalMessage assistantMsg = MultiModalMessage.builder()
                     .role(Role.ASSISTANT.getValue())
                     .content(Collections.singletonList(
@@ -268,22 +345,6 @@ public class AiSdkChatService {
             log.error("调用多模态模型识图失败", e);
             return "图片识别失败，请稍后再试";
         }
-    }
-
-    private String extractText(MultiModalConversationResult result) {
-        List<Map<String, Object>> contentList = result.getOutput()
-                .getChoices()
-                .get(0)
-                .getMessage()
-                .getContent();
-
-        for (Map<String, Object> item : contentList) {
-            if (item.containsKey("text")) {
-                Object textObj = item.get("text");
-                return textObj != null ? textObj.toString() : "";
-            }
-        }
-        return "";
     }
 
     /** 文生图 */
@@ -356,6 +417,7 @@ public class AiSdkChatService {
         }
     }
 
+    /** 语音转文字（ASR） */
     public String speechToText(byte[] audioBytes) {
         if (audioBytes == null || audioBytes.length == 0) {
             return "";
@@ -367,21 +429,21 @@ public class AiSdkChatService {
             String base64Audio = Base64.getEncoder().encodeToString(audioBytes);
 
             String requestBody = String.format("""
-                {
-                    "model": "qwen3-asr-flash",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "audio",
-                                    "audio": "data:audio/wav;base64,%s"
-                                }
-                            ]
-                        }
-                    ]
-                }
-                """, base64Audio);
+                    {
+                        "model": "qwen3-asr-flash",
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "audio",
+                                        "audio": "data:audio/wav;base64,%s"
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                    """, base64Audio);
 
             RestClient asrClient = RestClient.builder()
                     .baseUrl("https://dashscope.aliyuncs.com")
@@ -395,7 +457,6 @@ public class AiSdkChatService {
                     .retrieve()
                     .body(String.class);
 
-            ObjectMapper mapper = new ObjectMapper();
             JsonNode root = mapper.readTree(responseJson);
             String text = root.path("choices").get(0).path("message").path("content").asText();
 
@@ -405,6 +466,101 @@ public class AiSdkChatService {
         } catch (Exception e) {
             log.error("ASR 识别失败", e);
             return "";
+        }
+    }
+
+    // ==================== 上下文压缩 ====================
+
+    /**
+     * 检查上下文是否超过阈值，超过则用 DeepSeek 总结旧对话并压缩
+     */
+    private void trimContext() {
+        int roundCount = (messages.size() - 1) / 2;
+        if (roundCount <= MAX_ROUNDS) {
+            return;
+        }
+
+        log.info("上下文达到 {} 轮，触发压缩...", roundCount);
+
+        int keepStart = messages.size() - KEEP_ROUNDS * 2;
+        List<MultiModalMessage> toSummarize = messages.subList(1, keepStart);
+        List<MultiModalMessage> toKeep = messages.subList(keepStart, messages.size());
+
+        String summary = summarize(toSummarize);
+        if (summary == null || summary.isBlank()) {
+            log.warn("DeepSeek 总结失败，跳过压缩");
+            return;
+        }
+
+        List<MultiModalMessage> newMessages = new ArrayList<>();
+        newMessages.add(messages.get(0));
+
+        MultiModalMessage summaryMsg = MultiModalMessage.builder()
+                .role(Role.SYSTEM.getValue())
+                .content(Collections.singletonList(
+                        Collections.singletonMap("text", "【对话历史摘要】" + summary)
+                ))
+                .build();
+        newMessages.add(summaryMsg);
+        newMessages.addAll(toKeep);
+
+        this.messages = newMessages;
+        log.info("上下文压缩完成，从 {} 条压缩到 {} 条",
+                messages.size(), newMessages.size());
+    }
+
+    /**
+     * 调用 DeepSeek 对旧对话进行中等详细程度的总结
+     */
+    private String summarize(List<MultiModalMessage> history) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("请对以下对话进行总结，要求：\n");
+        sb.append("1. 覆盖每个话题的核心内容和结论\n");
+        sb.append("2. 不要只概括成一句话，保留每个话题的关键细节\n");
+        sb.append("3. 不要逐条复述，合并同类话题\n");
+        sb.append("4. 用中文输出，控制在 300-500 字\n\n");
+        sb.append("对话内容：\n");
+
+        for (int i = 0; i < history.size(); i++) {
+            MultiModalMessage msg = history.get(i);
+            List<Map<String, Object>> contentList = msg.getContent();
+            if (contentList == null || contentList.isEmpty()) continue;
+            Object textObj = contentList.get(0).get("text");
+            if (textObj == null) continue;
+            String text = textObj.toString();
+            if (text.isBlank()) continue;
+
+            String role = "user".equals(msg.getRole()) ? "用户" : "AI";
+            sb.append(role).append(": ").append(text).append("\n");
+        }
+
+        String requestBody = """
+                {
+                    "model": "deepseek-v4-flash",
+                    "messages": [
+                        {"role": "user", "content": "%s"}
+                    ]
+                }
+                """.formatted(sb.toString()
+                        .replace("\\", "\\\\")
+                        .replace("\"", "\\\"")
+                        .replace("\n", "\\n"));
+
+        try {
+            String responseJson = deepSeekClient.post()
+                    .uri("/chat/completions")
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + System.getenv("DEEPSEEK_API_KEY"))
+                    .body(requestBody)
+                    .retrieve()
+                    .body(String.class);
+
+            JsonNode root = mapper.readTree(responseJson);
+            return root.path("choices").get(0).path("message").path("content").asText().trim();
+
+        } catch (Exception e) {
+            log.error("DeepSeek 总结失败", e);
+            return null;
         }
     }
 }
