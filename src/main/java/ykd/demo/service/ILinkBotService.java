@@ -156,10 +156,16 @@ public class ILinkBotService {
             // AI 聊天
             String aiReply = aiSdkChatService.chat(voiceText);
 
-            // TTS 转语音发回
-            byte[] replyAudio = aiSdkChatService.textToSpeech(aiReply);
-            if (replyAudio.length > 0) {
-                client.sendFile(fromUserId, replyAudio, "语音回复.wav", "");
+            // TTS → WAV 文件发回（iLink Bot 通道不支持语音气泡，降级为文件）
+            byte[] wavBytes = aiSdkChatService.textToSpeech(aiReply);
+            if (wavBytes.length > 0) {
+                log.info("发送语音文件，大小={} 字节", wavBytes.length);
+                try {
+                    client.sendFile(fromUserId, wavBytes, "语音回复.wav", "点击播放");
+                    log.info("语音文件发送完成");
+                } catch (Exception e) {
+                    log.error("语音文件发送失败", e);
+                }
             } else {
                 client.sendText(fromUserId, aiReply);
             }
@@ -316,18 +322,18 @@ public class ILinkBotService {
         }
     }
 
-    /** TTS：AI 生成回复 → 转语音 → 发语音文件，不返回文字 */
+    /** TTS：AI 生成回复 → TTS → WAV 文件发回（iLink Bot 通道不支持语音气泡） */
     private String handleTts(String fromUserId, String raw) {
         String aiReply = aiSdkChatService.chat(raw);
 
-        byte[] audioBytes = aiSdkChatService.textToSpeech(aiReply);
-        if (audioBytes.length == 0) {
-            return "语音合成失败，请稍后重试";
+        byte[] wavBytes = aiSdkChatService.textToSpeech(aiReply);
+        if (wavBytes.length == 0) {
+            return aiReply;
         }
 
         try {
-            log.info("发送语音文件，大小={} 字节", audioBytes.length);
-            client.sendFile(fromUserId, audioBytes, "语音回复.wav", "点击播放语音回复");
+            log.info("发送语音文件，大小={} 字节", wavBytes.length);
+            client.sendFile(fromUserId, wavBytes, "语音回复.wav", "点击播放");
         } catch (Exception e) {
             log.error("发送语音文件失败", e);
             return "语音发送失败：" + aiReply;

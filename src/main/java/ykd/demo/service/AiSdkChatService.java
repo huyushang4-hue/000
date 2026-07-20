@@ -76,11 +76,16 @@ public class AiSdkChatService {
 
         log.info("SDK 向多模态模型发送文字请求，userMessage={}", userMessage);
 
+        // 在用户消息前加时间戳（不影响缓存，因为它属于用户消息的一部分）
+        String timedMessage = "[" + java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy年M月d日 HH:mm")) + "] "
+                + userMessage;
+
         try {
             MultiModalMessage userMsg = MultiModalMessage.builder()
                     .role(Role.USER.getValue())
                     .content(Collections.singletonList(
-                            Collections.singletonMap("text", userMessage)
+                            Collections.singletonMap("text", timedMessage)
                     ))
                     .build();
 
@@ -351,7 +356,6 @@ public class AiSdkChatService {
         }
     }
 
-    /** 语音转文字（ASR） */
     public String speechToText(byte[] audioBytes) {
         if (audioBytes == null || audioBytes.length == 0) {
             return "";

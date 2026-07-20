@@ -47,8 +47,8 @@ public class DeepSeekIntentRecognizer {
             ]
         }
         """.formatted(
-                systemContent.replace("\"", "\\\"").replace("\n", "\\n"),
-                input.replace("\"", "\\\""));
+                systemContent.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n"),
+                input.replace("\\", "\\\\").replace("\"", "\\\""));
 
         // 2. 发请求
         String responseJson = restClient.post()
