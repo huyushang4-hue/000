@@ -1,9 +1,7 @@
 package ykd.demo.service;
 
 import com.github.wechat.ilink.sdk.ILinkClient;
-import com.github.wechat.ilink.sdk.ILinkClientBuilder;
 import com.github.wechat.ilink.sdk.core.config.ILinkConfig;
-import com.github.wechat.ilink.sdk.core.model.ImageItem;
 import com.github.wechat.ilink.sdk.core.model.MessageItem;
 import com.github.wechat.ilink.sdk.core.model.WeixinMessage;
 import ykd.demo.intent.Intent;
@@ -17,6 +15,7 @@ import java.util.Base64;
 import java.util.List;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import ykd.demo.service.impl.DeepSeekIntentRecognizer;
 
 @Slf4j
 @Service
@@ -24,17 +23,17 @@ public class ILinkBotService {
 
     private final ILinkClient client;
     private final WeatherService weatherService;
-    private final AiSdkChatService aiSdkChatService;
+    private final AiChatService aiChatService;
     private final DeepSeekIntentRecognizer intentRecognizer;
     private final RestClient restClient = RestClient.create();
     private final SearchService searchService;
 
     public ILinkBotService(WeatherService weatherService,
-                           AiSdkChatService aiSdkChatService,
+                           AiChatService aiChatService,
                            DeepSeekIntentRecognizer intentRecognizer,
                            SearchService searchService) {
         this.weatherService = weatherService;
-        this.aiSdkChatService = aiSdkChatService;
+        this.aiChatService = aiChatService;
         this.intentRecognizer = intentRecognizer;
         this.searchService = searchService;
 
@@ -131,7 +130,7 @@ public class ILinkBotService {
             byte[] imageBytes = client.downloadImageFromMessageItem(imageItem);
             String base64 = Base64.getEncoder().encodeToString(imageBytes);
             String prompt = (text == null || text.isBlank()) ? "描述一下这张图片" : text;
-            reply = aiSdkChatService.chatWithImageBase64(prompt, base64);
+            reply = aiChatService.chatWithImageBase64(prompt, base64);
         } else if (voiceItem != null) {
             // ③ 语音消息 → ASR → AI 聊天 → TTS → 回复
             log.info("收到语音消息 [{}]", fromUserId);
@@ -146,7 +145,7 @@ public class ILinkBotService {
             if (voiceText == null) {
                 // 方案 B：自己调 ASR
                 byte[] voiceBytes = client.downloadVoiceFromMessageItem(voiceItem);
-                voiceText = aiSdkChatService.speechToText(voiceBytes);
+                voiceText = aiChatService.speechToText(voiceBytes);
             }
 
             if (voiceText == null || voiceText.isBlank()) {
@@ -186,7 +185,7 @@ public class ILinkBotService {
                     return;
                 }
 
-                voiceText = aiSdkChatService.speechToText(fileBytes);
+                voiceText = aiChatService.speechToText(fileBytes);
 
                 if (voiceText == null || voiceText.isBlank()) {
                     client.sendText(fromUserId, "无法识别音频内容，请重试");
@@ -232,17 +231,17 @@ public class ILinkBotService {
         // /voice 切换音色
         if (raw.toLowerCase().startsWith("/voice ")) {
             String voiceName = raw.substring(7).trim();
-            return aiSdkChatService.setVoice(voiceName);
+            return aiChatService.setVoice(voiceName);
         }
 
-        String history = aiSdkChatService.getRecentHistory(6);
+        String history = aiChatService.getRecentHistory(6);
         Intent intent = intentRecognizer.recognize(raw, history);
         log.info("意图识别结果={}, input={}", intent, raw);
 
         return switch (intent) {
             case GENERATE_IMAGE -> handleGenerateImage(fromUserId, raw);
             case WEATHER        -> handleWeather(raw);
-            case CHAT           -> aiSdkChatService.chat(raw);
+            case CHAT           -> aiChatService.chat(raw);
             case TTS            -> handleTts(fromUserId, raw);
             case INT_SEARCH     -> handleSearch(raw);
             case UNKNOWN        -> "没听懂，可以再说一遍吗？";
@@ -254,7 +253,7 @@ public class ILinkBotService {
         String polishedPrompt = polishPromptWithDeepSeek(raw);
         log.info("润色后提示词：{}", polishedPrompt);
 
-        String imageUrl = aiSdkChatService.generateImage(polishedPrompt);
+        String imageUrl = aiChatService.generateImage(polishedPrompt);
         return sendGeneratedImageBack(fromUserId, imageUrl);
     }
 
@@ -306,7 +305,7 @@ public class ILinkBotService {
         }
 
         // 把天气数据和用户原问题一起发给 AI，让 AI 结合问题回答
-        return aiSdkChatService.chat("天气数据：" + weatherData + "\n用户问题：" + raw + "\n请根据天气数据回答用户的问题");
+        return aiChatService.chat("天气数据：" + weatherData + "\n用户问题：" + raw + "\n请根据天气数据回答用户的问题");
     }
 
     /** DeepSeek 提取城市名 */
@@ -372,9 +371,9 @@ public class ILinkBotService {
 
     /** TTS：AI 生成回复 → TTS → WAV 文件发回（iLink Bot 通道不支持语音气泡） */
     private String handleTts(String fromUserId, String raw) {
-        String aiReply = aiSdkChatService.chat(raw);
+        String aiReply = aiChatService.chat(raw);
 
-        byte[] wavBytes = aiSdkChatService.textToSpeech(aiReply);
+        byte[] wavBytes = aiChatService.textToSpeech(aiReply);
         if (wavBytes.length == 0) {
             return aiReply;
         }
@@ -401,14 +400,14 @@ public class ILinkBotService {
         }
 
         String searchResult = searchService.search(searchQuery);
-        return aiSdkChatService.chat("搜索结果如下：\n" + searchResult + "\n请根据以上搜索结果回答用户的问题：" + raw);
+        return aiChatService.chat("搜索结果如下：\n" + searchResult + "\n请根据以上搜索结果回答用户的问题：" + raw);
     }
 
     /** 用 DeepSeek 提取搜索关键词 */
     private String extractSearchQuery(String raw) {
         try {
             // 带上对话历史，让 DeepSeek 提取真正想搜的内容
-            String history = aiSdkChatService.getRecentHistory(6);
+            String history = aiChatService.getRecentHistory(6);
             String context = (history == null || history.isBlank()) ? "" : "对话历史：\n" + history + "\n\n";
 
             String requestBody = """

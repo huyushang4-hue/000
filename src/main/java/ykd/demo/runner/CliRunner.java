@@ -5,8 +5,8 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import ykd.demo.service.AiChatService;
-import ykd.demo.service.AiSdkChatService;
 import ykd.demo.service.WeatherService;
+
 import java.util.Scanner;
 
 @Order(2)
@@ -16,11 +16,12 @@ public class CliRunner implements CommandLineRunner {
     private static final String VERSION = "1.0.0";
     private final long startTime;
     private final WeatherService weatherService;
-    private final AiSdkChatService aiSdkChatService;
-    public CliRunner(WeatherService weatherService, AiSdkChatService aiSdkChatService) {
+    private final AiChatService aiChatService;
+
+    public CliRunner(WeatherService weatherService, AiChatService aiChatService) {
         this.weatherService = weatherService;
         this.startTime = System.currentTimeMillis();
-        this.aiSdkChatService = aiSdkChatService;
+        this.aiChatService = aiChatService;
     }
 
     @Override
@@ -34,16 +35,16 @@ public class CliRunner implements CommandLineRunner {
                 if (line.isEmpty()) continue;
 
                 switch (line) {
-                    case "/help":
+                    case "help":
                         showHelp();
                         break;
-                    case "/version":
+                    case "version":
                         System.out.println("程序版本：" + VERSION);
                         break;
-                    case "/status":
+                    case "status":
                         showStatus();
                         break;
-                    case "/test":
+                    case "test":
                         int x = 1 / 0;
                         break;
                     case "/qwen": {
@@ -52,7 +53,7 @@ public class CliRunner implements CommandLineRunner {
                             System.out.print("你> ");
                             String msg = scanner.nextLine().trim();
                             if (msg.equalsIgnoreCase("exit")) break;
-                            String result1 = aiSdkChatService.chat(msg);
+                            String result1 = aiChatService.chat(msg);
                             System.out.println("AI> " + result1);
                         }
                         break;
@@ -63,7 +64,7 @@ public class CliRunner implements CommandLineRunner {
                         String result = weatherService.getWeather(city);
                         System.out.println(result);
                         break;
-                    case "/exit":
+                    case "exit":
                         System.out.println("再见！");
                         return;
                     default:
@@ -88,8 +89,8 @@ public class CliRunner implements CommandLineRunner {
     private void showStatus() {
         long uptime = (System.currentTimeMillis() - startTime) / 1000;
         long totalMB = Runtime.getRuntime().totalMemory() / 1024 / 1024;
-        long freeMB = Runtime.getRuntime().freeMemory() / 1024 / 1024;
-        int cores = Runtime.getRuntime().availableProcessors();
+        long freeMB  = Runtime.getRuntime().freeMemory()  / 1024 / 1024;
+        int  cores   = Runtime.getRuntime().availableProcessors();
 
         System.out.println("=== 运行状态 ===");
         System.out.println("运行时长：" + uptime + " 秒");

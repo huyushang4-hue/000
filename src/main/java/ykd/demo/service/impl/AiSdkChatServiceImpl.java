@@ -1,4 +1,4 @@
-package ykd.demo.service;
+package ykd.demo.service.impl;
 
 import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversation;
 import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationParam;
@@ -18,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import ykd.demo.service.AiChatService;
 
 import java.util.Base64;
 import java.util.ArrayList;
@@ -27,7 +28,7 @@ import java.util.Map;
 
 @Slf4j
 @Service
-public class AiSdkChatService {
+public class AiSdkChatServiceImpl implements AiChatService {
 
     private final MultiModalConversation conversation;
     private List<MultiModalMessage> messages;
@@ -47,7 +48,7 @@ public class AiSdkChatService {
     /** 压缩后保留的最近轮数 */
     private static final int KEEP_ROUNDS = 10;
 
-    public AiSdkChatService() {
+    public AiSdkChatServiceImpl() {
         this.apiKey = System.getenv("DASHSCOPE_API_KEY");
         this.conversation = new MultiModalConversation();
         this.messages = new ArrayList<>();
@@ -59,7 +60,7 @@ public class AiSdkChatService {
 
     // ==================== 音色控制 ====================
 
-    /** 切换 TTS 音色 */
+    @Override
     public String setVoice(String name) {
         if (name == null || name.isBlank()) {
             return "音色名不能为空";
@@ -75,14 +76,13 @@ public class AiSdkChatService {
         }
     }
 
-    /** 获取当前音色名 */
+    @Override
     public String getCurrentVoice() {
         return currentVoice.name();
     }
 
     // ==================== Token 用量统计 ====================
 
-    /** 从 API 结果中提取 Token 用量并记录 */
     private void recordUsage(MultiModalConversationResult result) {
         try {
             JsonNode usage = mapper.valueToTree(result.getUsage());
@@ -107,14 +107,14 @@ public class AiSdkChatService {
         }
     }
 
-    /** 获取上次 Token 用量 */
+    @Override
     public String getLastUsage() {
         return lastUsage;
     }
 
     // ==================== 工具方法 ====================
 
-    /** 获取最近 N 轮对话历史的文字摘要（用于意图识别） */
+    @Override
     public String getRecentHistory(int count) {
         if (messages.isEmpty()) {
             return "";
@@ -140,7 +140,6 @@ public class AiSdkChatService {
         return sb.toString();
     }
 
-    /** 从结果中提取文字 */
     private String extractText(MultiModalConversationResult result) {
         List<Map<String, Object>> contentList = result.getOutput()
                 .getChoices()
@@ -159,13 +158,12 @@ public class AiSdkChatService {
 
     // ==================== 核心对话方法 ====================
 
-    /** 纯文字对话 */
+    @Override
     public String chat(String userMessage) {
         if (userMessage == null || userMessage.isBlank()) {
             return "请输入想说的话";
         }
 
-        // 在用户消息前加时间戳
         String timedMessage = "[" + java.time.LocalDateTime.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("yyyy年M月d日 HH:mm")) + "] "
                 + userMessage;
@@ -191,7 +189,6 @@ public class AiSdkChatService {
             MultiModalConversationResult result = conversation.call(param);
             String reply = extractText(result);
 
-            // 记录 Token 用量
             recordUsage(result);
 
             MultiModalMessage assistantMsg = MultiModalMessage.builder()
@@ -203,7 +200,6 @@ public class AiSdkChatService {
 
             messages.add(assistantMsg);
 
-            // 检查是否需要压缩上下文
             trimContext();
 
             return reply;
@@ -214,7 +210,7 @@ public class AiSdkChatService {
         }
     }
 
-    /** 带联网搜索的对话 */
+    @Override
     public String chatWithSearch(String userMessage) {
         if (userMessage == null || userMessage.isBlank()) {
             return "请输入想搜索的内容";
@@ -238,7 +234,6 @@ public class AiSdkChatService {
                     ))
                     .build();
 
-            // 构造搜索专用消息列表（不污染全局对话历史）
             List<MultiModalMessage> searchMessages = new ArrayList<>();
             searchMessages.add(systemMsg);
             searchMessages.addAll(this.messages);
@@ -254,10 +249,8 @@ public class AiSdkChatService {
             MultiModalConversationResult result = conversation.call(param);
             String reply = extractText(result);
 
-            // 记录 Token 用量
             recordUsage(result);
 
-            // 只把用户消息和 AI 回复存入全局历史
             messages.add(userMsg);
             MultiModalMessage assistantMsg = MultiModalMessage.builder()
                     .role(Role.ASSISTANT.getValue())
@@ -275,7 +268,7 @@ public class AiSdkChatService {
         }
     }
 
-    /** 图文对话 */
+    @Override
     public String chatWithImage(String text, String imageUrl) {
         if (text == null || text.isBlank()) {
             text = "描述一下这张图片";
@@ -304,7 +297,6 @@ public class AiSdkChatService {
             MultiModalConversationResult result = conversation.call(param);
             String reply = extractText(result);
 
-            // 记录 Token 用量
             recordUsage(result);
 
             MultiModalMessage assistantMsg = MultiModalMessage.builder()
@@ -324,7 +316,7 @@ public class AiSdkChatService {
         }
     }
 
-    /** 用 base64 图片进行图文对话 */
+    @Override
     public String chatWithImageBase64(String text, String base64Image) {
         if (text == null || text.isBlank()) {
             text = "描述一下这张图片";
@@ -353,7 +345,6 @@ public class AiSdkChatService {
             MultiModalConversationResult result = conversation.call(param);
             String reply = extractText(result);
 
-            // 记录 Token 用量
             recordUsage(result);
 
             MultiModalMessage assistantMsg = MultiModalMessage.builder()
@@ -373,7 +364,7 @@ public class AiSdkChatService {
         }
     }
 
-    /** 文生图 */
+    @Override
     public String generateImage(String prompt) {
         if (prompt == null || prompt.isBlank()) {
             return "请告诉我你想画什么";
@@ -405,7 +396,7 @@ public class AiSdkChatService {
         }
     }
 
-    /** 文字转语音（TTS）—— 使用当前音色 */
+    @Override
     public byte[] textToSpeech(String text) {
         if (text == null || text.isBlank()) {
             return new byte[0];
@@ -443,7 +434,7 @@ public class AiSdkChatService {
         }
     }
 
-    /** 语音转文字（ASR） */
+    @Override
     public String speechToText(byte[] audioBytes) {
         if (audioBytes == null || audioBytes.length == 0) {
             return "";
@@ -497,9 +488,6 @@ public class AiSdkChatService {
 
     // ==================== 上下文压缩 ====================
 
-    /**
-     * 检查上下文是否超过阈值，超过则用 DeepSeek 总结旧对话并压缩
-     */
     private void trimContext() {
         int roundCount = (messages.size() - 1) / 2;
         if (roundCount <= MAX_ROUNDS) {
@@ -535,9 +523,6 @@ public class AiSdkChatService {
                 messages.size(), newMessages.size());
     }
 
-    /**
-     * 调用 DeepSeek 对旧对话进行中等详细程度的总结
-     */
     private String summarize(List<MultiModalMessage> history) {
         StringBuilder sb = new StringBuilder();
         sb.append("请对以下对话进行总结，要求：\n");
