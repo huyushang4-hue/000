@@ -85,11 +85,28 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
     private void recordUsage(MultiModalConversationResult result) {
         try {
-            JsonNode usage = mapper.valueToTree(result.getUsage());
+            // 先转成 JSON 字符串看看实际结构
+            String usageJson = mapper.writeValueAsString(result.getUsage());
+            log.debug("原始 usage JSON: {}", usageJson);
+            JsonNode usage = mapper.readTree(usageJson);
+
             int inputTokens = usage.path("input_tokens").asInt(0);
+            if (inputTokens == 0) {
+                // 如果下划线形式没取到，试试驼峰
+                inputTokens = usage.path("inputTokens").asInt(0);
+            }
             int outputTokens = usage.path("output_tokens").asInt(0);
+            if (outputTokens == 0) {
+                outputTokens = usage.path("outputTokens").asInt(0);
+            }
             int totalTokens = usage.path("total_tokens").asInt(0);
+            if (totalTokens == 0) {
+                totalTokens = usage.path("totalTokens").asInt(0);
+            }
             int cachedTokens = usage.path("prompt_tokens_details").path("cached_tokens").asInt(0);
+            if (cachedTokens == 0) {
+                cachedTokens = usage.path("promptTokensDetails").path("cachedTokens").asInt(0);
+            }
 
             double cacheRate = inputTokens > 0
                     ? (double) cachedTokens / inputTokens * 100
