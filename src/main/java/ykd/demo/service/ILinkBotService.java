@@ -4,38 +4,29 @@ import com.github.wechat.ilink.sdk.ILinkClient;
 import com.github.wechat.ilink.sdk.core.config.ILinkConfig;
 import com.github.wechat.ilink.sdk.core.model.MessageItem;
 import com.github.wechat.ilink.sdk.core.model.WeixinMessage;
-import ykd.demo.intent.Intent;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.web.client.RestClient;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
-import java.net.URI;
 import java.util.Base64;
 import java.util.List;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
-import ykd.demo.service.impl.DeepSeekIntentRecognizer;
+import java.util.Map;
 
 @Slf4j
 @Service
 public class ILinkBotService {
 
     private final ILinkClient client;
-    private final WeatherService weatherService;
     private final AiChatService aiChatService;
-    private final DeepSeekIntentRecognizer intentRecognizer;
-    private final RestClient restClient = RestClient.create();
     private final SearchService searchService;
+    private final WeatherService weatherService;
 
-    public ILinkBotService(WeatherService weatherService,
-                           AiChatService aiChatService,
-                           DeepSeekIntentRecognizer intentRecognizer,
-                           SearchService searchService) {
-        this.weatherService = weatherService;
+    public ILinkBotService(AiChatService aiChatService,
+                           SearchService searchService,
+                           WeatherService weatherService) {
         this.aiChatService = aiChatService;
-        this.intentRecognizer = intentRecognizer;
         this.searchService = searchService;
+        this.weatherService = weatherService;
 
         ILinkConfig config = ILinkConfig.builder()
                 .heartbeatEnabled(true)
@@ -49,7 +40,6 @@ public class ILinkBotService {
                     public void onLoginSuccess(com.github.wechat.ilink.sdk.core.login.LoginContext ctx) {
                         log.info("登录成功！BotID={}", ctx.getBotId());
                     }
-
                     @Override
                     public void onLoginFailure(Throwable throwable) {
                         log.error("iLink 登录失败", throwable);
@@ -65,7 +55,6 @@ public class ILinkBotService {
                 .build();
     }
 
-    /** 启动：扫码登录 */
     public void start() {
         try {
             String qrCodeUrl = client.executeLogin();
@@ -75,12 +64,10 @@ public class ILinkBotService {
         }
     }
 
-    /** 停止 */
     public void stop() {
         client.close();
     }
 
-    /** 批量处理收到的消息 */
     private void handleMessages(List<WeixinMessage> messages) {
         for (WeixinMessage msg : messages) {
             try {
@@ -91,356 +78,130 @@ public class ILinkBotService {
         }
     }
 
-    /** 处理单条消息 */
     private void handleSingleMessage(WeixinMessage msg) throws IOException {
         String fromUserId = msg.getFrom_user_id();
         List<MessageItem> items = msg.getItem_list();
-        if (items == null || items.isEmpty()) {
-            return;
-        }
+        if (items == null || items.isEmpty()) return;
 
-        // 先回一句"正在思考……"让用户知道收到了
         client.sendText(fromUserId, "正在思考……");
 
-        // ① 先找第一条文字、图片和语音
         String text = null;
         MessageItem imageItem = null;
         MessageItem voiceItem = null;
         MessageItem fileItem = null;
         for (MessageItem item : items) {
-            if (item.getType() == 1 && item.getText_item() != null && text == null) {
+            if (item.getType() == 1 && item.getText_item() != null && text == null)
                 text = item.getText_item().getText();
-            }
-            if (item.getType() == 2 && item.getImage_item() != null && imageItem == null) {
+            if (item.getType() == 2 && item.getImage_item() != null && imageItem == null)
                 imageItem = item;
-            }
-            if (item.getType() == 3 && voiceItem == null) {
+            if (item.getType() == 3 && voiceItem == null)
                 voiceItem = item;
-            }
-            if (item.getType() == 4 && fileItem == null) {
+            if (item.getType() == 4 && fileItem == null)
                 fileItem = item;
-            }
         }
 
         String reply;
         String voiceText = null;
+
         if (imageItem != null) {
-            // ② 有图片 → 下载 → 转 base64 → 识图
             log.info("收到图片消息 [{}]", fromUserId);
             byte[] imageBytes = client.downloadImageFromMessageItem(imageItem);
             String base64 = Base64.getEncoder().encodeToString(imageBytes);
-            String prompt = (text == null || text.isBlank()) ? "描述一下这张图片" : text;
+            String prompt = (text == null || text.isBlank()) ? "描述这张图片" : text;
             reply = aiChatService.chatWithImageBase64(prompt, base64);
-        } else if (voiceItem != null) {
-            // ③ 语音消息 → ASR → AI 聊天 → TTS → 回复
-            log.info("收到语音消息 [{}]", fromUserId);
-            com.github.wechat.ilink.sdk.core.model.VoiceItem voiceDetail = voiceItem.getVoice_item();
-
-            // 方案 A：如果 SDK 自带语音识别结果，直接用
-            if (voiceDetail != null && voiceDetail.getText() != null && !voiceDetail.getText().isBlank()) {
-                voiceText = voiceDetail.getText();
-                log.info("语音消息自带识别文本：{}", voiceText);
-            }
-
-            if (voiceText == null) {
-                // 方案 B：自己调 ASR
-                byte[] voiceBytes = client.downloadVoiceFromMessageItem(voiceItem);
-                voiceText = aiChatService.speechToText(voiceBytes);
-            }
-
-            if (voiceText == null || voiceText.isBlank()) {
-                client.sendText(fromUserId, "抱歉，没听清你说什么，可以再说一遍吗？");
-                return;
-            }
-
-            log.info("语音识别为：{}", voiceText);
-
-            // 走意图识别 + 分发
-            reply = handleText(fromUserId, voiceText);
-
-            // 回复文字（TTS 意图会返回 null，因为已单独发了语音文件）
             if (reply != null) {
                 client.sendText(fromUserId, reply);
                 log.info("回复 [{}]: {}", fromUserId, reply);
             }
-            return;
-        } else if (fileItem != null) {
-            // ③ 文件消息 → 判断是否音频 → ASR 处理
-            log.info("收到文件消息 [{}]", fromUserId);
-            String fileName = fileItem.getFile_item() != null ? fileItem.getFile_item().getFile_name() : "";
-            String lowerName = fileName.toLowerCase();
-            boolean isAudio = lowerName.endsWith(".mp3") || lowerName.endsWith(".wav")
-                    || lowerName.endsWith(".ogg") || lowerName.endsWith(".m4a")
-                    || lowerName.endsWith(".aac") || lowerName.endsWith(".wma");
-
-            if (!isAudio) {
-                client.sendText(fromUserId, "暂不支持处理此文件类型，请发送音频文件");
+            flushPendingImages(fromUserId);
+        } else if (voiceItem != null) {
+            log.info("收到语音消息 [{}]", fromUserId);
+            com.github.wechat.ilink.sdk.core.model.VoiceItem voiceDetail = voiceItem.getVoice_item();
+            if (voiceDetail != null && voiceDetail.getText() != null && !voiceDetail.getText().isBlank())
+                voiceText = voiceDetail.getText();
+            if (voiceText == null) {
+                byte[] voiceBytes = client.downloadVoiceFromMessageItem(voiceItem);
+                voiceText = aiChatService.speechToText(voiceBytes);
+            }
+            if (voiceText == null || voiceText.isBlank()) {
+                client.sendText(fromUserId, "抱歉，没听清，请再说一遍");
                 return;
             }
-
+            log.info("语音识别：{}", voiceText);
+            reply = handleText(fromUserId, voiceText);
+            if (reply != null) {
+                client.sendText(fromUserId, reply);
+                log.info("回复 [{}]: {}", fromUserId, reply);
+            }
+            flushPendingImages(fromUserId);
+        } else if (fileItem != null) {
+            log.info("收到文件消息 [{}]", fromUserId);
+            String fileName = fileItem.getFile_item() != null ? fileItem.getFile_item().getFile_name() : "";
+            if (!fileName.toLowerCase().matches(".*\\.(mp3|wav|ogg|m4a|aac|wma)$")) {
+                client.sendText(fromUserId, "暂不支持此文件类型");
+                return;
+            }
             try {
                 byte[] fileBytes = client.downloadFileFromMessageItem(fileItem);
                 if (fileBytes == null || fileBytes.length == 0) {
-                    client.sendText(fromUserId, "文件下载失败，请重试");
+                    client.sendText(fromUserId, "文件下载失败");
                     return;
                 }
-
                 voiceText = aiChatService.speechToText(fileBytes);
-
                 if (voiceText == null || voiceText.isBlank()) {
-                    client.sendText(fromUserId, "无法识别音频内容，请重试");
+                    client.sendText(fromUserId, "无法识别音频");
                     return;
                 }
-
-                log.info("音频文件识别为：{}", voiceText);
-
-                // 走意图识别
+                log.info("音频识别：{}", voiceText);
                 reply = handleText(fromUserId, voiceText);
-
-                // 回复文字
                 if (reply != null) {
                     client.sendText(fromUserId, reply);
                     log.info("回复 [{}]: {}", fromUserId, reply);
                 }
+                flushPendingImages(fromUserId);
             } catch (Exception e) {
-                log.error("处理文件消息失败", e);
-                client.sendText(fromUserId, "处理文件失败，请重试");
+                log.error("处理文件失败", e);
+                client.sendText(fromUserId, "处理文件失败");
             }
-            return;
         } else {
-            // ④ 纯文字
             if (text == null || text.isBlank()) return;
             log.info("收到文字消息 [{}]: {}", fromUserId, text);
             reply = handleText(fromUserId, text);
-        }
-
-        // ④ 回复文字（仅当 reply 不为 null 时才发）
-        // TTS 意图会返回 null，因为已单独发了语音文件，不再重复发文字
-        if (reply != null) {
-            client.sendText(fromUserId, reply);
-            log.info("回复 [{}]: {}", fromUserId, reply);
+            if (reply != null) {
+                client.sendText(fromUserId, reply);
+                log.info("回复 [{}]: {}", fromUserId, reply);
+            }
+            flushPendingImages(fromUserId);
         }
     }
 
-    /** 处理纯文字 → 意图识别 → 分发 */
     private String handleText(String fromUserId, String raw) {
-        // /voices 列出所有音色
-        if (raw.equalsIgnoreCase("/voices")) {
-            return "可用音色：Cherry, Serena, Ethan, Chelsie, Dylan, Jada, Sunny, Nofish, Jennifer, Li, Marcus, Roy, Peter, Eric, Rocky, Kiki, Ryan, Katerina, Elias, Momo, Moon, Maia, Kai, Bella, Aiden, EldricSage, Mia, Mochi, Bellona, Vincent, Bunny, Neil, Arthur, Nini, Ebona, Seren, Pip, Stella, Bodega, Sonrisa, Alek, Dolce, Sohee, OnoAnna, Lenn, Emilien, Andre, RadioGol, Vivian\n使用 /voice 音色名 切换";
-        }
-        // /voice 切换音色
+        if (raw.equalsIgnoreCase("/voices"))
+            return "可用音色：\n" +
+                    "【女声】Cherry, Serena, Chelsie, Jada, Sunny, Jennifer, Kiki, Mia, Nini, Stella, Bella, Vivian, Mochi, Moon, Maia, Karen, Lily, Rose, Emily, Sophie\n" +
+                    "【男声】Ethan, Li, Marcus, Roy, Peter, Eric, Rocky, Kai, Neil, Arthur, Aiden, Vincent, Ryan, Dylan, Elias, Andre, Emilien, Marcus, Leo, Sam\n" +
+                    "使用 /voice 音色名 切换";
         if (raw.toLowerCase().startsWith("/voice ")) {
-            String voiceName = raw.substring(7).trim();
-            return aiChatService.setVoice(voiceName);
+            return aiChatService.setVoice(raw.substring(7).trim());
         }
-
-        String history = aiChatService.getRecentHistory(6);
-        Intent intent = intentRecognizer.recognize(raw, history);
-        log.info("意图识别结果={}, input={}", intent, raw);
-
-        return switch (intent) {
-            case GENERATE_IMAGE -> handleGenerateImage(fromUserId, raw);
-            case WEATHER        -> handleWeather(raw);
-            case CHAT           -> aiChatService.chat(raw);
-            case TTS            -> handleTts(fromUserId, raw);
-            case INT_SEARCH     -> handleSearch(raw);
-            case UNKNOWN        -> "没听懂，可以再说一遍吗？";
-        };
+        return aiChatService.chatWithTools(raw);
     }
 
-    /** 生图意图：AI 润色提示词 → 调模型 → 发微信 */
-    private String handleGenerateImage(String fromUserId, String raw) {
-        String polishedPrompt = polishPromptWithDeepSeek(raw);
-        log.info("润色后提示词：{}", polishedPrompt);
-
-        String imageUrl = aiChatService.generateImage(polishedPrompt);
-        return sendGeneratedImageBack(fromUserId, imageUrl);
-    }
-
-    /** DeepSeek 润色生图提示词 */
-    private String polishPromptWithDeepSeek(String raw) {
-        try {
-            String requestBody = """
-            {
-                "model": "deepseek-v4-flash",
-                "messages": [
-                    {"role": "system", "content": "你是一个 prompt 优化助手。用户想生成一张图片，请提取核心描述，去除命令词（画、生成、帮我等），适当润色增加细节和画面感，直接返回润色后的英文提示词，不要加解释。"},
-                    {"role": "user", "content": "%s"}
-                ]
+    private void flushPendingImages(String toUserId) {
+        List<Map.Entry<byte[], String>> pending = aiChatService.drainPendingImages();
+        for (Map.Entry<byte[], String> entry : pending) {
+            try {
+                String fileName = entry.getValue();
+                if (fileName.endsWith(".wav") || fileName.endsWith(".mp3") || fileName.endsWith(".silk")) {
+                    client.sendFile(toUserId, entry.getKey(), fileName, "点击播放");
+                    log.info("积压语音文件已发送 [{}]: {}", toUserId, fileName);
+                } else {
+                    client.sendImage(toUserId, entry.getKey(), fileName, "");
+                    log.info("积压图片已发送 [{}]: {}", toUserId, fileName);
+                }
+            } catch (Exception e) {
+                log.error("发送积压文件失败 [{}]", toUserId, e);
             }
-            """.formatted(raw.replace("\"", "\\\""));
-
-            String responseJson = restClient.post()
-                    .uri("https://api.deepseek.com/chat/completions")
-                    .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + System.getenv("DEEPSEEK_API_KEY"))
-                    .body(requestBody)
-                    .retrieve()
-                    .body(String.class);
-
-            ObjectMapper mapper = new ObjectMapper();
-            JsonNode root = mapper.readTree(responseJson);
-            return root.path("choices").get(0).path("message").path("content").asText().trim();
-
-        } catch (Exception e) {
-            log.warn("DeepSeek 润色失败，使用原始描述", e);
-            return raw;
-        }
-    }
-
-    /** 天气意图：DeepSeek 提取城市名 → 调 WeatherService → AI 整理回复 */
-    private String handleWeather(String raw) {
-        String argument = extractCityWithDeepSeek(raw);
-
-        if (argument.isBlank()) {
-            return "请带城市名，如：/weather 北京";
-        }
-
-        log.info("提取城市名：{}", argument);
-
-        String weatherData = weatherService.getWeather(argument);
-
-        if (weatherData.startsWith("错误")) {
-            return weatherData;
-        }
-
-        // 把天气数据和用户原问题一起发给 AI，让 AI 结合问题回答
-        return aiChatService.chat("天气数据：" + weatherData + "\n用户问题：" + raw + "\n请根据天气数据回答用户的问题");
-    }
-
-    /** DeepSeek 提取城市名 */
-    private String extractCityWithDeepSeek(String raw) {
-        String input = raw.replaceFirst("/weather", "").trim();
-        if (input.isBlank()) {
-            return "";
-        }
-
-        try {
-            String requestBody = """
-            {
-                "model": "deepseek-v4-flash",
-                "messages": [
-                    {"role": "system", "content": "从用户的话中提取中国城市名，只返回城市名本身，不要任何解释。如果找不到城市名，返回空。"},
-                    {"role": "user", "content": "%s"}
-                ]
-            }
-            """.formatted(input.replace("\"", "\\\""));
-
-            String responseJson = restClient.post()
-                    .uri("https://api.deepseek.com/chat/completions")
-                    .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + System.getenv("DEEPSEEK_API_KEY"))
-                    .body(requestBody)
-                    .retrieve()
-                    .body(String.class);
-
-            ObjectMapper mapper = new ObjectMapper();
-            JsonNode root = mapper.readTree(responseJson);
-            String city = root.path("choices").get(0).path("message").path("content").asText().trim();
-
-            if (city.isBlank() || city.equals("空")) {
-                return "";
-            }
-            return city;
-
-        } catch (Exception e) {
-            log.warn("DeepSeek 提取城市名失败", e);
-            return input;
-        }
-    }
-
-    /** 下载生成的图片并通过微信发回 */
-    private String sendGeneratedImageBack(String toUserId, String imageUrl) {
-        try {
-            byte[] imageBytes = restClient.get()
-                    .uri(URI.create(imageUrl))
-                    .retrieve()
-                    .body(byte[].class);
-
-            if (imageBytes == null || imageBytes.length == 0) {
-                return "图片下载失败，URL：" + imageUrl;
-            }
-
-            client.sendImage(toUserId, imageBytes, "generated.png", "");
-            return "图片已生成并发送，请查收。";
-        } catch (Exception e) {
-            log.error("发送生成图片失败，url={}", imageUrl, e);
-            return "图片生成成功但发送失败，URL：" + imageUrl;
-        }
-    }
-
-    /** TTS：AI 生成回复 → TTS → WAV 文件发回（iLink Bot 通道不支持语音气泡） */
-    private String handleTts(String fromUserId, String raw) {
-        String aiReply = aiChatService.chat(raw);
-
-        byte[] wavBytes = aiChatService.textToSpeech(aiReply);
-        if (wavBytes.length == 0) {
-            return aiReply;
-        }
-
-        try {
-            log.info("发送语音文件，大小={} 字节", wavBytes.length);
-            client.sendFile(fromUserId, wavBytes, "语音回复.wav", "点击播放");
-        } catch (Exception e) {
-            log.error("发送语音文件失败", e);
-            return "语音发送失败：" + aiReply;
-        }
-
-        return null;
-    }
-
-    /** 搜索意图：提取搜索关键词 → 调 Tavily → AI 整理回复 */
-    private String handleSearch(String raw) {
-        // 先用 DeepSeek 从原文+上下文提取搜索关键词
-        String searchQuery = extractSearchQuery(raw);
-        log.info("提取的搜索关键词：{}", searchQuery);
-
-        if (searchQuery.isBlank()) {
-            return "请告诉我你想搜索什么";
-        }
-
-        String searchResult = searchService.search(searchQuery);
-        return aiChatService.chat("搜索结果如下：\n" + searchResult + "\n请根据以上搜索结果回答用户的问题：" + raw);
-    }
-
-    /** 用 DeepSeek 提取搜索关键词 */
-    private String extractSearchQuery(String raw) {
-        try {
-            // 带上对话历史，让 DeepSeek 提取真正想搜的内容
-            String history = aiChatService.getRecentHistory(6);
-            String context = (history == null || history.isBlank()) ? "" : "对话历史：\n" + history + "\n\n";
-
-            String requestBody = """
-            {
-                "model": "deepseek-v4-flash",
-                "messages": [
-                    {"role": "system", "content": "你是一个搜索关键词提取助手。用户想搜索某个信息，请从对话历史和用户最新消息中提取最精准的搜索关键词。只返回关键词本身，不要加任何解释、引号、标点。如果用户提到了某个具体名称（游戏、人物、事件等），优先保留。示例：用户说'早发布了，你搜搜'，历史提到'王者荣耀世界'，返回：王者荣耀世界 发布 2026"},
-                    {"role": "user", "content": "%s"}
-                ]
-            }
-            """.formatted((context + "用户最新消息：" + raw).replace("\"", "\\\"").replace("\n", "\\n"));
-
-            String responseJson = restClient.post()
-                    .uri("https://api.deepseek.com/chat/completions")
-                    .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + System.getenv("DEEPSEEK_API_KEY"))
-                    .body(requestBody)
-                    .retrieve()
-                    .body(String.class);
-
-            ObjectMapper mapper = new ObjectMapper();
-            JsonNode root = mapper.readTree(responseJson);
-            String keywords = root.path("choices").get(0).path("message").path("content").asText().trim();
-
-            // 如果返回的是无效内容，用原文兜底
-            if (keywords.isBlank() || keywords.length() > 100) {
-                return raw;
-            }
-            return keywords;
-
-        } catch (Exception e) {
-            log.warn("提取搜索关键词失败，使用原文", e);
-            return raw;
         }
     }
 }
