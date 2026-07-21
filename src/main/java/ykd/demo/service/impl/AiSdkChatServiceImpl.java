@@ -103,18 +103,10 @@ public class AiSdkChatServiceImpl implements AiChatService {
             if (totalTokens == 0) {
                 totalTokens = usage.path("totalTokens").asInt(0);
             }
-            int cachedTokens = usage.path("prompt_tokens_details").path("cached_tokens").asInt(0);
-            if (cachedTokens == 0) {
-                cachedTokens = usage.path("promptTokensDetails").path("cachedTokens").asInt(0);
-            }
-
-            double cacheRate = inputTokens > 0
-                    ? (double) cachedTokens / inputTokens * 100
-                    : 0;
 
             lastUsage = String.format(
-                    "📊 Token 用量 | 输入 %d | 输出 %d | 总计 %d | 缓存命中 %d (%.1f%%)",
-                    inputTokens, outputTokens, totalTokens, cachedTokens, cacheRate);
+                    "📊 Token 用量 | 输入 %d | 输出 %d | 总计 %d",
+                    inputTokens, outputTokens, totalTokens);
 
             log.info("Token 用量：{}", lastUsage);
 
