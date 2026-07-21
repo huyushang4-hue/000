@@ -56,11 +56,6 @@ public class AiSdkChatService {
 
     // ==================== Token 用量统计 ====================
 
-    /** 获取上次请求的 Token 用量（格式化文本） */
-    public String getLastUsage() {
-        return lastUsage;
-    }
-
     /** 从 API 结果中提取 Token 用量并记录 */
     private void recordUsage(MultiModalConversationResult result) {
         try {

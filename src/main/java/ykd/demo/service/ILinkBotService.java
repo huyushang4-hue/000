@@ -107,6 +107,7 @@ public class ILinkBotService {
         String text = null;
         MessageItem imageItem = null;
         MessageItem voiceItem = null;
+        MessageItem fileItem = null;
         for (MessageItem item : items) {
             if (item.getType() == 1 && item.getText_item() != null && text == null) {
                 text = item.getText_item().getText();
@@ -116,6 +117,9 @@ public class ILinkBotService {
             }
             if (item.getType() == 3 && voiceItem == null) {
                 voiceItem = item;
+            }
+            if (item.getType() == 4 && fileItem == null) {
+                fileItem = item;
             }
         }
 
@@ -152,21 +156,56 @@ public class ILinkBotService {
 
             log.info("语音识别为：{}", voiceText);
 
-            // AI 聊天
-            String aiReply = aiSdkChatService.chat(voiceText);
+            // 走意图识别 + 分发
+            reply = handleText(fromUserId, voiceText);
 
-            // TTS → WAV 文件发回（iLink Bot 通道不支持语音气泡，降级为文件）
-            byte[] wavBytes = aiSdkChatService.textToSpeech(aiReply);
-            if (wavBytes.length > 0) {
-                log.info("发送语音文件，大小={} 字节", wavBytes.length);
-                try {
-                    client.sendFile(fromUserId, wavBytes, "语音回复.wav", "点击播放");
-                    log.info("语音文件发送完成");
-                } catch (Exception e) {
-                    log.error("语音文件发送失败", e);
+            // 回复文字（TTS 意图会返回 null，因为已单独发了语音文件）
+            if (reply != null) {
+                client.sendText(fromUserId, reply);
+                log.info("回复 [{}]: {}", fromUserId, reply);
+            }
+            return;
+        } else if (fileItem != null) {
+            // ③ 文件消息 → 判断是否音频 → ASR 处理
+            log.info("收到文件消息 [{}]", fromUserId);
+            String fileName = fileItem.getFile_item() != null ? fileItem.getFile_item().getFile_name() : "";
+            String lowerName = fileName.toLowerCase();
+            boolean isAudio = lowerName.endsWith(".mp3") || lowerName.endsWith(".wav")
+                    || lowerName.endsWith(".ogg") || lowerName.endsWith(".m4a")
+                    || lowerName.endsWith(".aac") || lowerName.endsWith(".wma");
+
+            if (!isAudio) {
+                client.sendText(fromUserId, "暂不支持处理此文件类型，请发送音频文件");
+                return;
+            }
+
+            try {
+                byte[] fileBytes = client.downloadFileFromMessageItem(fileItem);
+                if (fileBytes == null || fileBytes.length == 0) {
+                    client.sendText(fromUserId, "文件下载失败，请重试");
+                    return;
                 }
-            } else {
-                client.sendText(fromUserId, aiReply);
+
+                voiceText = aiSdkChatService.speechToText(fileBytes);
+
+                if (voiceText == null || voiceText.isBlank()) {
+                    client.sendText(fromUserId, "无法识别音频内容，请重试");
+                    return;
+                }
+
+                log.info("音频文件识别为：{}", voiceText);
+
+                // 走意图识别
+                reply = handleText(fromUserId, voiceText);
+
+                // 回复文字
+                if (reply != null) {
+                    client.sendText(fromUserId, reply);
+                    log.info("回复 [{}]: {}", fromUserId, reply);
+                }
+            } catch (Exception e) {
+                log.error("处理文件消息失败", e);
+                client.sendText(fromUserId, "处理文件失败，请重试");
             }
             return;
         } else {
