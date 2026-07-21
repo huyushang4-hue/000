@@ -3,16 +3,16 @@ package ykd.demo.service;
 import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversation;
 import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationParam;
 import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationResult;
+import com.alibaba.dashscope.aigc.multimodalconversation.AudioParameters;
 import com.alibaba.dashscope.common.MultiModalMessage;
 import com.alibaba.dashscope.common.Role;
 import com.alibaba.dashscope.exception.ApiException;
+import com.alibaba.dashscope.exception.NoApiKeyException;
+import com.alibaba.dashscope.exception.UploadFileException;
 import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesis;
 import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesisParam;
 import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesisResult;
 import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesisOutput;
-
-import com.alibaba.dashscope.exception.NoApiKeyException;
-import com.alibaba.dashscope.exception.UploadFileException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
@@ -36,6 +36,9 @@ public class AiSdkChatService {
     private final RestClient deepSeekClient;
     private final ObjectMapper mapper = new ObjectMapper();
 
+    /** 当前 TTS 音色，默认 CHERRY */
+    private AudioParameters.Voice currentVoice = AudioParameters.Voice.CHERRY;
+
     /** 最近一次请求的 Token 用量统计（格式化好的字符串） */
     private String lastUsage = "";
 
@@ -52,6 +55,29 @@ public class AiSdkChatService {
         this.deepSeekClient = RestClient.builder()
                 .baseUrl("https://api.deepseek.com")
                 .build();
+    }
+
+    // ==================== 音色控制 ====================
+
+    /** 切换 TTS 音色 */
+    public String setVoice(String name) {
+        if (name == null || name.isBlank()) {
+            return "音色名不能为空";
+        }
+        try {
+            AudioParameters.Voice voice = AudioParameters.Voice.valueOf(name.toUpperCase());
+            this.currentVoice = voice;
+            log.info("TTS 音色已切换为：{}", name);
+            return "音色已切换为：" + name;
+        } catch (IllegalArgumentException e) {
+            log.warn("无效的音色名：{}", name);
+            return "无效的音色名：" + name + "，可用音色：Cherry, Serena, Ethan, Chelsie...";
+        }
+    }
+
+    /** 获取当前音色名 */
+    public String getCurrentVoice() {
+        return currentVoice.name();
     }
 
     // ==================== Token 用量统计 ====================
@@ -79,6 +105,11 @@ public class AiSdkChatService {
             log.warn("提取 Token 用量失败", e);
             lastUsage = "";
         }
+    }
+
+    /** 获取上次 Token 用量 */
+    public String getLastUsage() {
+        return lastUsage;
     }
 
     // ==================== 工具方法 ====================
@@ -374,20 +405,20 @@ public class AiSdkChatService {
         }
     }
 
-    /** 文字转语音（TTS） */
+    /** 文字转语音（TTS）—— 使用当前音色 */
     public byte[] textToSpeech(String text) {
         if (text == null || text.isBlank()) {
             return new byte[0];
         }
 
-        log.info("TTS 合成语音，text={}", text);
+        log.info("TTS 合成语音，text={}，voice={}", text, currentVoice);
 
         try {
             MultiModalConversationParam param = MultiModalConversationParam.builder()
                     .apiKey(apiKey)
                     .model("qwen3-tts-flash")
                     .text(text)
-                    .voice(com.alibaba.dashscope.aigc.multimodalconversation.AudioParameters.Voice.CHERRY)
+                    .voice(currentVoice)
                     .build();
 
             MultiModalConversationResult result = conversation.call(param);

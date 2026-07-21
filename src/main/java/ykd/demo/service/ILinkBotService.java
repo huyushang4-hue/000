@@ -225,6 +225,16 @@ public class ILinkBotService {
 
     /** 处理纯文字 → 意图识别 → 分发 */
     private String handleText(String fromUserId, String raw) {
+        // /voices 列出所有音色
+        if (raw.equalsIgnoreCase("/voices")) {
+            return "可用音色：Cherry, Serena, Ethan, Chelsie, Dylan, Jada, Sunny, Nofish, Jennifer, Li, Marcus, Roy, Peter, Eric, Rocky, Kiki, Ryan, Katerina, Elias, Momo, Moon, Maia, Kai, Bella, Aiden, EldricSage, Mia, Mochi, Bellona, Vincent, Bunny, Neil, Arthur, Nini, Ebona, Seren, Pip, Stella, Bodega, Sonrisa, Alek, Dolce, Sohee, OnoAnna, Lenn, Emilien, Andre, RadioGol, Vivian\n使用 /voice 音色名 切换";
+        }
+        // /voice 切换音色
+        if (raw.toLowerCase().startsWith("/voice ")) {
+            String voiceName = raw.substring(7).trim();
+            return aiSdkChatService.setVoice(voiceName);
+        }
+
         String history = aiSdkChatService.getRecentHistory(6);
         Intent intent = intentRecognizer.recognize(raw, history);
         log.info("意图识别结果={}, input={}", intent, raw);
