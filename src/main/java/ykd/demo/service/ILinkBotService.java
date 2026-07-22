@@ -8,9 +8,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
-import java.util.Base64;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -19,10 +19,20 @@ public class ILinkBotService {
     private final ILinkClient client;
     private final AiChatService aiChatService;
 
+    // 防抖：4秒内连续文字消息合并成一条
+    private final List<DebounceEntry> pendingTexts = new ArrayList<>();
+    private ScheduledFuture<?> debounceTask;
+    private static final long DEBOUNCE_MS = 10_000;
+    private final ScheduledExecutorService debouncer = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "debounce");
+        t.setDaemon(true);
+        return t;
+    });
+
+    private record DebounceEntry(String fromUserId, String text) {}
 
     public ILinkBotService(AiChatService aiChatService) {
         this.aiChatService = aiChatService;
-
 
         ILinkConfig config = ILinkConfig.builder()
                 .heartbeatEnabled(true)
@@ -61,6 +71,7 @@ public class ILinkBotService {
     }
 
     public void stop() {
+        debouncer.shutdown();
         client.close();
     }
 
@@ -79,8 +90,6 @@ public class ILinkBotService {
         List<MessageItem> items = msg.getItem_list();
         if (items == null || items.isEmpty()) return;
 
-        client.sendText(fromUserId, "正在思考……");
-
         String text = null;
         MessageItem imageItem = null;
         MessageItem voiceItem = null;
@@ -96,25 +105,27 @@ public class ILinkBotService {
                 fileItem = item;
         }
 
-        String reply;
-        String voiceText = null;
-
-        //图片处理
+        // 图片：立即处理，不走防抖
         if (imageItem != null) {
+            client.sendText(fromUserId, "正在思考……");
             log.info("收到图片消息 [{}]", fromUserId);
             byte[] imageBytes = client.downloadImageFromMessageItem(imageItem);
             String base64 = Base64.getEncoder().encodeToString(imageBytes);
             String prompt = (text == null || text.isBlank()) ? "描述这张图片" : text;
-            reply = aiChatService.chatWithImageBase64(prompt, base64);
+            String reply = aiChatService.chatWithImageBase64(prompt, base64);
             if (reply != null) {
                 client.sendText(fromUserId, reply);
                 log.info("回复 [{}]: {}", fromUserId, reply);
             }
             flushPendingImages(fromUserId);
+            return;
         }
-        //语音处理
-        else if (voiceItem != null) {
+
+        // 语音：立即处理，不走防抖
+        if (voiceItem != null) {
+            client.sendText(fromUserId, "正在思考……");
             log.info("收到语音消息 [{}]", fromUserId);
+            String voiceText = null;
             com.github.wechat.ilink.sdk.core.model.VoiceItem voiceDetail = voiceItem.getVoice_item();
             if (voiceDetail != null && voiceDetail.getText() != null && !voiceDetail.getText().isBlank())
                 voiceText = voiceDetail.getText();
@@ -127,13 +138,18 @@ public class ILinkBotService {
                 return;
             }
             log.info("语音识别：{}", voiceText);
-            reply = handleText(voiceText);
+            String reply = aiChatService.chatWithTools(voiceText);
             if (reply != null) {
                 client.sendText(fromUserId, reply);
                 log.info("回复 [{}]: {}", fromUserId, reply);
             }
             flushPendingImages(fromUserId);
-        } else if (fileItem != null) {
+            return;
+        }
+
+        // 文件：立即处理，不走防抖
+        if (fileItem != null) {
+            client.sendText(fromUserId, "正在思考……");
             log.info("收到文件消息 [{}]", fromUserId);
             String fileName = fileItem.getFile_item() != null ? fileItem.getFile_item().getFile_name() : "";
             if (!fileName.toLowerCase().matches(".*\\.(mp3|wav|ogg|m4a|aac|wma)$")) {
@@ -146,13 +162,13 @@ public class ILinkBotService {
                     client.sendText(fromUserId, "文件下载失败");
                     return;
                 }
-                voiceText = aiChatService.speechToText(fileBytes);
+                String voiceText = aiChatService.speechToText(fileBytes);
                 if (voiceText == null || voiceText.isBlank()) {
                     client.sendText(fromUserId, "无法识别音频");
                     return;
                 }
                 log.info("音频识别：{}", voiceText);
-                reply = handleText(voiceText);
+                String reply = aiChatService.chatWithTools(voiceText);
                 if (reply != null) {
                     client.sendText(fromUserId, reply);
                     log.info("回复 [{}]: {}", fromUserId, reply);
@@ -162,20 +178,48 @@ public class ILinkBotService {
                 log.error("处理文件失败", e);
                 client.sendText(fromUserId, "处理文件失败");
             }
-        } else {
-            if (text == null || text.isBlank()) return;
-            log.info("收到文字消息 [{}]: {}", fromUserId, text);
-            reply = handleText(text);
+            return;
+        }
+
+        // 纯文字：走防抖
+        if (text == null || text.isBlank()) return;
+        log.info("收到文字消息 [{}]: {}", fromUserId, text);
+
+        //立刻提示，让用户知道消息收到了
+        client.sendText(fromUserId, "正在思考……");
+
+        synchronized (pendingTexts) {
+            pendingTexts.add(new DebounceEntry(fromUserId, text));
+            if (debounceTask != null) debounceTask.cancel(false);
+            debounceTask = debouncer.schedule(this::flushTextBatch, DEBOUNCE_MS, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /** 防抖超时后，合并所有排队文字消息一起发给 AI */
+    private void flushTextBatch() {
+        List<DebounceEntry> batch;
+        synchronized (pendingTexts) {
+            batch = List.copyOf(pendingTexts);
+            pendingTexts.clear();
+            debounceTask = null;
+        }
+
+        if (batch.isEmpty()) return;
+
+        try {
+            String fromUserId = batch.get(batch.size() - 1).fromUserId;
+            String combined = batch.stream().map(DebounceEntry::text).collect(Collectors.joining("\n---\n"));
+            log.info("防抖合并 {} 条消息，发给 AI: {}", batch.size(), combined);
+
+            String reply = aiChatService.chatWithTools(combined);
             if (reply != null) {
                 client.sendText(fromUserId, reply);
                 log.info("回复 [{}]: {}", fromUserId, reply);
             }
             flushPendingImages(fromUserId);
+        } catch (Exception e) {
+            log.error("防抖批次处理失败", e);
         }
-    }
-
-    private String handleText( String raw) {
-        return aiChatService.chatWithTools(raw);
     }
 
     private void flushPendingImages(String toUserId) {
