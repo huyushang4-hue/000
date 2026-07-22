@@ -19,19 +19,8 @@ public class ChangeVoiceTool implements Tool {
 
     @Override
     public FunctionDefinition getDefinition() {
-        JsonObject params = new JsonObject();
-        params.addProperty("type", "object");
-        JsonObject props = new JsonObject();
-        JsonObject voiceProp = new JsonObject();
-        voiceProp.addProperty("type", "string");
-        voiceProp.addProperty("description", "音色英文名，如：Cherry, Serena, Ethan, Chelsie");
-        props.add("voice", voiceProp);
-        params.add("properties", props);
-        JsonArray required = new JsonArray();
-        required.add("voice");
-        params.add("required", required);
-        return FunctionDefinition.builder()
-                .name("change_voice").description("切换 TTS 语音音色").parameters(params).build();
+        return func("change_voice","切换tts语音", """
+                {"type":"object","properties":{"voice":{"type":"string","description":"音色英文名，如：Cherry, Serena, Ethan, Chelsie"}},"required":["voice"]}""");
     }
 
     @Override

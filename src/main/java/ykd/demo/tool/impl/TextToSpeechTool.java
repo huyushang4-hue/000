@@ -31,19 +31,9 @@ public class TextToSpeechTool implements Tool {
 
     @Override
     public FunctionDefinition getDefinition() {
-        JsonObject params = new JsonObject();
-        params.addProperty("type", "object");
-        JsonObject props = new JsonObject();
-        JsonObject textProp = new JsonObject();
-        textProp.addProperty("type", "string");
-        textProp.addProperty("description", "要转为语音的文字内容");
-        props.add("text", textProp);
-        params.add("properties", props);
-        JsonArray required = new JsonArray();
-        required.add("text");
-        params.add("required", required);
-        return FunctionDefinition.builder()
-                .name("text_to_speech").description("将文字转为语音文件（WAV格式）发送给用户").parameters(params).build();
+        return func("text_to_speech", "将文字转为语音文件（WAV格式）发送给用户", """
+            {"type":"object","properties":{"text":{"type":"string","description":"要转为语音的文字内容"}},"required":["text"]}
+            """);
     }
 
     @Override

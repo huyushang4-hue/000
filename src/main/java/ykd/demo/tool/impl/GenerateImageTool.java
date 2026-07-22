@@ -26,19 +26,9 @@ public class GenerateImageTool implements Tool {
 
     @Override
     public FunctionDefinition getDefinition() {
-        JsonObject params = new JsonObject();
-        params.addProperty("type", "object");
-        JsonObject props = new JsonObject();
-        JsonObject promptProp = new JsonObject();
-        promptProp.addProperty("type", "string");
-        promptProp.addProperty("description", "生成图片的文字描述，最好是英文");
-        props.add("prompt", promptProp);
-        params.add("properties", props);
-        JsonArray required = new JsonArray();
-        required.add("prompt");
-        params.add("required", required);
-        return FunctionDefinition.builder()
-                .name("generate_image").description("根据文字描述生成图片").parameters(params).build();
+        return func("generate_image", "根据文字描述生成图片", """
+            {"type":"object","properties":{"prompt":{"type":"string","description":"生成图片的文字描述，最好是英文"}},"required":["prompt"]}
+            """);
     }
 
     @Override

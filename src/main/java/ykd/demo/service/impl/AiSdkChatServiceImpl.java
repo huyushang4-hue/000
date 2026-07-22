@@ -54,19 +54,25 @@ public class AiSdkChatServiceImpl implements AiChatService {
     @Override
     public String chatWithTools(String userMessage) {
         if (userMessage == null || userMessage.isBlank()) return "请输入想说的话";
+        //时间戳
         String timedMessage = "[" + LocalDateTime.now()
                 .format(DateTimeFormatter.ofPattern("yyyy年M月d日 HH:mm")) + "] " + userMessage;
         log.info("Function Calling chat, userMessage={}", userMessage);
+
         try {
             messages.add(MultiModalMessage.builder().role(Role.USER.getValue())
                     .content(Collections.singletonList(Collections.singletonMap("text", timedMessage))).build());
+
             List<ToolBase> toolDefs = tools.stream().map(Tool::getDefinition)
                     .map(def -> (ToolBase) ToolFunction.builder().function(def).build()).toList();
+
             MultiModalConversationParam param = MultiModalConversationParam.builder()
                     .apiKey(apiKey).model("qwen3.7-plus").messages(messages).tools(toolDefs).build();
+
             for (int round = 0; round < 5; round++) {
                 MultiModalConversationResult result = conversation.call(param);
                 MultiModalMessage responseMsg = result.getOutput().getChoices().get(0).getMessage();
+
                 List<ToolCallBase> toolCalls = responseMsg.getToolCalls();
                 if (toolCalls == null || toolCalls.isEmpty()) {
                     String reply = extractText(result);
@@ -136,15 +142,20 @@ public class AiSdkChatServiceImpl implements AiChatService {
             List<Map<String, Object>> content = new ArrayList<>();
             content.add(Collections.singletonMap("image", "data:image/jpeg;base64," + base64Image));
             content.add(Collections.singletonMap("text", text));
+
             messages.add(MultiModalMessage.builder().role(Role.USER.getValue()).content(content).build());
+
             List<ToolBase> toolDefs = tools.stream().map(Tool::getDefinition)
                     .map(def -> (ToolBase) ToolFunction.builder().function(def).build()).toList();
+
             MultiModalConversationParam param = MultiModalConversationParam.builder()
                     .apiKey(apiKey).model("qwen3.7-plus").messages(messages)
                     .tools(toolDefs).enableSearch(true).build();
+
             MultiModalConversationResult result = conversation.call(param);
             String reply = extractText(result);
             recordUsage(result);
+
             messages.add(MultiModalMessage.builder().role(Role.ASSISTANT.getValue())
                     .content(Collections.singletonList(Collections.singletonMap("text", reply))).build());
             return reply;

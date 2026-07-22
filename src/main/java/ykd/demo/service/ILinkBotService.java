@@ -99,6 +99,7 @@ public class ILinkBotService {
         String reply;
         String voiceText = null;
 
+        //图片处理
         if (imageItem != null) {
             log.info("收到图片消息 [{}]", fromUserId);
             byte[] imageBytes = client.downloadImageFromMessageItem(imageItem);
@@ -110,7 +111,9 @@ public class ILinkBotService {
                 log.info("回复 [{}]: {}", fromUserId, reply);
             }
             flushPendingImages(fromUserId);
-        } else if (voiceItem != null) {
+        }
+        //语音处理
+        else if (voiceItem != null) {
             log.info("收到语音消息 [{}]", fromUserId);
             com.github.wechat.ilink.sdk.core.model.VoiceItem voiceDetail = voiceItem.getVoice_item();
             if (voiceDetail != null && voiceDetail.getText() != null && !voiceDetail.getText().isBlank())
@@ -124,7 +127,7 @@ public class ILinkBotService {
                 return;
             }
             log.info("语音识别：{}", voiceText);
-            reply = handleText(fromUserId, voiceText);
+            reply = handleText(voiceText);
             if (reply != null) {
                 client.sendText(fromUserId, reply);
                 log.info("回复 [{}]: {}", fromUserId, reply);
@@ -149,7 +152,7 @@ public class ILinkBotService {
                     return;
                 }
                 log.info("音频识别：{}", voiceText);
-                reply = handleText(fromUserId, voiceText);
+                reply = handleText(voiceText);
                 if (reply != null) {
                     client.sendText(fromUserId, reply);
                     log.info("回复 [{}]: {}", fromUserId, reply);
@@ -162,7 +165,7 @@ public class ILinkBotService {
         } else {
             if (text == null || text.isBlank()) return;
             log.info("收到文字消息 [{}]: {}", fromUserId, text);
-            reply = handleText(fromUserId, text);
+            reply = handleText(text);
             if (reply != null) {
                 client.sendText(fromUserId, reply);
                 log.info("回复 [{}]: {}", fromUserId, reply);
@@ -171,7 +174,7 @@ public class ILinkBotService {
         }
     }
 
-    private String handleText(String fromUserId, String raw) {
+    private String handleText( String raw) {
         return aiChatService.chatWithTools(raw);
     }
 
