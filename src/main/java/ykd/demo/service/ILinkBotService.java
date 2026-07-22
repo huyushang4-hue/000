@@ -18,15 +18,11 @@ public class ILinkBotService {
 
     private final ILinkClient client;
     private final AiChatService aiChatService;
-    private final SearchService searchService;
-    private final WeatherService weatherService;
 
-    public ILinkBotService(AiChatService aiChatService,
-                           SearchService searchService,
-                           WeatherService weatherService) {
+
+    public ILinkBotService(AiChatService aiChatService) {
         this.aiChatService = aiChatService;
-        this.searchService = searchService;
-        this.weatherService = weatherService;
+
 
         ILinkConfig config = ILinkConfig.builder()
                 .heartbeatEnabled(true)
@@ -176,14 +172,6 @@ public class ILinkBotService {
     }
 
     private String handleText(String fromUserId, String raw) {
-        if (raw.equalsIgnoreCase("/voices"))
-            return "可用音色：\n" +
-                    "【女声】Cherry, Serena, Chelsie, Jada, Sunny, Jennifer, Kiki, Mia, Nini, Stella, Bella, Vivian, Mochi, Moon, Maia, Karen, Lily, Rose, Emily, Sophie\n" +
-                    "【男声】Ethan, Li, Marcus, Roy, Peter, Eric, Rocky, Kai, Neil, Arthur, Aiden, Vincent, Ryan, Dylan, Elias, Andre, Emilien, Marcus, Leo, Sam\n" +
-                    "使用 /voice 音色名 切换";
-        if (raw.toLowerCase().startsWith("/voice ")) {
-            return aiChatService.setVoice(raw.substring(7).trim());
-        }
         return aiChatService.chatWithTools(raw);
     }
 
