@@ -37,11 +37,11 @@ public class ReadFileTool implements Tool {
     public FunctionDefinition getDefinition() {
         return func("read_file", """
             读取文件内容，支持 PDF、Word(docx)、Excel(xlsx)、文本文件(txt/md/html)。
-            传入 URL、本地路径，或传入 **image_store** 读取微信用户刚发的文件。
+            传入 URL、本地路径，或传入 **attachment_store** 读取微信用户刚发的文件。
             返回提取的文字（最长 3000 字）。
             """,
             """
-            {"type":"object","properties":{"path":{"type":"string","description":"文件 URL、本地路径，或 image_store（读取微信用户刚发的文档）"}},"required":["path"]}
+            {"type":"object","properties":{"path":{"type":"string","description":"文件 URL、本地路径，或 attachment_store（读取微信用户刚发的文档）"}},"required":["path"]}
             """);
     }
 
@@ -67,11 +67,11 @@ public class ReadFileTool implements Tool {
     }
 
     private byte[] readBytes(String path) throws Exception {
-        // image_store → 从 ImageStore 读取微信用户发的文件
-        if ("image_store".equals(path)) {
+        // attachment_store → 从 AttachmentStore 读取微信用户发的文件
+        if ("attachment_store".equals(path)) {
             String base64 = attachmentStore.getBase64();
             if (base64 == null || base64.isBlank())
-                throw new RuntimeException("imageStore 中没有暂存的文件");
+                throw new RuntimeException("AttachmentStore 中没有暂存的文件");
             return Base64.getDecoder().decode(base64);
         }
         try { return new URL(path).openStream().readAllBytes(); }
