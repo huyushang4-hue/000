@@ -7,7 +7,8 @@ import java.util.Map;
 public interface AiChatService {
     String chat(String userMessage);
     String chatWithTools(String userMessage);
-    String chatWithImageBase64(String text, String base64Image);
     String speechToText(byte[] audioBytes);
     List<Map.Entry<byte[], String>> drainPendingImages();
+    /** 防抖批次：混合文字+图片一起处理 */
+    String processDebounced(List<Map<String, Object>> entries);
 }

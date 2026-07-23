@@ -112,6 +112,63 @@ public class AiSdkChatServiceImpl implements AiChatService {
         }
     }
 
+    @Override
+    public String processDebounced(List<Map<String, Object>> entries) {
+        if (entries == null || entries.isEmpty()) return "请输入想说的话";
+
+        log.info("防抖批次 {} 条", entries.size());
+        for (Map<String, Object> e : entries) {
+            String type = (String) e.getOrDefault("type", "TEXT");
+            String text = (String) e.getOrDefault("text", "");
+            if ("IMAGE".equals(type)) {
+                String base64 = (String) e.getOrDefault("base64Image", "");
+                String prompt = (text == null || text.isBlank()) ? "描述这张图片" : text;
+                List<Map<String, Object>> content = new ArrayList<>();
+                content.add(Collections.singletonMap("image", "data:image/jpeg;base64," + base64));
+                content.add(Collections.singletonMap("text", prompt));
+                messages.add(MultiModalMessage.builder().role(Role.USER.getValue()).content(content).build());
+            } else {
+                String timedMsg = "[" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy年M月d日 HH:mm")) + "] " + text;
+                addUserMsg(timedMsg);
+            }
+        }
+
+        MultiModalConversationParam param = buildParam();
+        MultiModalConversationResult result = null;
+        try {
+            for (int round = 0; round < 5; round++) {
+                result = conversation.call(param);
+                MultiModalMessage responseMsg = result.getOutput().getChoices().get(0).getMessage();
+                List<ToolCallBase> toolCalls = responseMsg.getToolCalls();
+                if (toolCalls == null || toolCalls.isEmpty()) break;
+                messages.add(responseMsg);
+                for (ToolCallBase tc : toolCalls) {
+                    if (tc instanceof ToolCallFunction tcf) {
+                        ToolCallFunction.CallFunction func = tcf.getFunction();
+                        String toolResult = executeTool(func.getName(), func.getArguments());
+                        messages.add(MultiModalMessage.builder()
+                                .role("tool").toolCallId(tc.getId())
+                                .content(singletonText(toolResult)).build());
+                    }
+                }
+                param = buildParam();
+            }
+            String reply = extractText(result);
+            if (reply.isBlank()) {
+                result = conversation.call(param);
+                reply = extractText(result);
+            }
+            if (reply.isBlank()) reply = "AI暂时无法回复，请稍后再试";
+            addAssistantMsg(reply);
+            recordUsage(result);
+            trimContext();
+            return reply;
+        } catch (ApiException | NoApiKeyException | UploadFileException e) {
+            log.error("防抖批次处理失败", e);
+            return "AI暂时无法回复，请稍后再试";
+        }
+    }
+
     private String executeTool(String name, String arguments) {
         JsonObject args = JsonParser.parseString(arguments).getAsJsonObject();
         for (Tool tool : tools) {
@@ -124,36 +181,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
         return "未知工具：" + name;
     }
 
-    // ==================== 识图 ====================
 
-    @Override
-    public String chatWithImageBase64(String text, String base64Image) {
-        if (text == null || text.isBlank()) text = "描述一下这张图片";
-        log.info("识图: {}", text);
-
-        try {
-            List<Map<String, Object>> content = new ArrayList<>();
-            content.add(Collections.singletonMap("image", "data:image/jpeg;base64," + base64Image));
-            content.add(Collections.singletonMap("text", text));
-
-            messages.add(MultiModalMessage.builder().role(Role.USER.getValue()).content(content).build());
-
-            MultiModalConversationResult result = conversation.call(
-                    MultiModalConversationParam.builder()
-                            .apiKey(apiKey).model("qwen3.7-plus")
-                            .messages(messages).tools(toolDefs)
-                            .enableSearch(true).build());
-
-            String reply = extractText(result);
-            addAssistantMsg(reply);
-            recordUsage(result);
-            return reply;
-
-        } catch (ApiException | NoApiKeyException | UploadFileException e) {
-            log.error("识图失败", e);
-            return "图片识别失败，请稍后再试";
-        }
-    }
 
     // ==================== ASR ====================
 
