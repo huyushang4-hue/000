@@ -43,8 +43,11 @@ public class AiSdkChatServiceImpl implements AiChatService {
     /** 调用 DashScope 兼容 OpenAI 接口做 ASR 语音识别 */
     private final RestClient dashScopeClient;
 
+    /** 所有实现了 Tool 接口的 Spring Bean，构造时自动注入 */
     private final List<Tool> tools;
+    /** 工具定义批量转换：Tool.getDefinition() → SDK 的 ToolFunction，传给大模型让模型自主选择调用 */
     private final List<ToolBase> toolDefs;
+    /** 积压媒体队列：工具生成的图片/WAV 暂存此处，发完文字后统一发送 */
     private final PendingMediaQueue mediaQueue;
 
     /** 最后一次 Token 消耗信息，用于日志监控 */
@@ -62,6 +65,8 @@ public class AiSdkChatServiceImpl implements AiChatService {
         Thread t = new Thread(r, "tool-exec"); t.setDaemon(true); return t;
     });
 
+    /** 构造器逻辑：注入所有 Tool Bean + 媒体队列 → 初始化两个 RestClient 固定 BaseURL →
+     *  批量转换工具定义 Tool.getDefinition() → SDK ToolFunction 存入 toolDefs */
     public AiSdkChatServiceImpl(List<Tool> tools, PendingMediaQueue mediaQueue) {
         this.tools = tools;
         this.deepSeekClient = RestClient.builder().baseUrl("https://api.deepseek.com").build();
@@ -248,6 +253,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
     // ==================== 积压媒体 ====================
 
+    /** 消费积压媒体队列：取出所有排队未处理的图片/音频，供上层 ILinkBotService 批量发送 */
     @Override
     public List<Map.Entry<byte[], String>> drainPendingImages() {
         return mediaQueue.drain();
@@ -255,24 +261,29 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
     // ==================== 内部工具方法 ====================
 
+    /** singletonText：统一封装 DashScope 要求的 [{"text":"xxx"}] 内容结构 */
     private static List<Map<String, Object>> singletonText(String text) {
         return Collections.singletonList(Collections.singletonMap("text", text));
     }
 
+    /** 快捷添加用户单轮文本消息到上下文 */
     private void addUserMsg(String text) {
         messages.add(MultiModalMessage.builder().role(Role.USER.getValue()).content(singletonText(text)).build());
     }
 
+    /** 快捷添加助手单轮文本回复到上下文 */
     private void addAssistantMsg(String text) {
         messages.add(MultiModalMessage.builder().role(Role.ASSISTANT.getValue()).content(singletonText(text)).build());
     }
 
+    /** 构建请求参数：固定使用 qwen3.7-plus 模型，携带完整 messages + 全部工具定义，每次工具循环都会重新构建 */
     private MultiModalConversationParam buildParam() {
         return MultiModalConversationParam.builder()
                 .apiKey(apiKey).model("qwen3.7-plus")
                 .messages(messages).tools(toolDefs).build();
     }
 
+    /** 遍历多模态 content 数组，提取 type=text 的文本内容，兼容 DashScope 返回体结构 */
     private String extractText(MultiModalConversationResult result) {
         try {
             if (result == null) return "";
