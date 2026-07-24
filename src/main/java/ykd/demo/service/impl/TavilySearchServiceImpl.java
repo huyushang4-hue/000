@@ -70,6 +70,7 @@ public class TavilySearchServiceImpl implements SearchService {
 
             String resultText = sb.toString();
             log.info("Tavily 搜索成功，结果长度={} 字符", resultText.length());
+            log.info("Tavily 搜索结果：{}", resultText);
             return resultText;
 
         } catch (Exception e) {

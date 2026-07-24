@@ -58,12 +58,12 @@ public class CliRunner implements CommandLineRunner {
                         }
                         break;
                     }
-                    case "/weather":
-                        System.out.print("请输入城市名：");
-                        String city = scanner.nextLine().trim();
-                        String result = weatherService.getWeather(city);
-                        System.out.println(result);
-                        break;
+//                    case "/weather":
+//                        System.out.print("请输入城市名：");
+//                        String city = scanner.nextLine().trim();
+//                        String result = weatherService.getWeather(city);
+//                        System.out.println(result);
+//                        break;
                     case "exit":
                         System.out.println("再见！");
                         return;
