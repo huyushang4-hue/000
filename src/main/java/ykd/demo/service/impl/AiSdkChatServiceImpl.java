@@ -23,6 +23,7 @@ import ykd.demo.tool.Tool;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.*;
 
 @Slf4j
 @Service
@@ -42,8 +43,13 @@ public class AiSdkChatServiceImpl implements AiChatService {
     private final PendingMediaQueue mediaQueue;
 
     private String lastUsage = "";
-    private static final int MAX_ROUNDS = 50;
+    private static final int MAX_ROUNDS = 50;       // 上下文压缩阈值
     private static final int KEEP_ROUNDS = 10;
+    private static final int MAX_TOOL_ROUNDS = 10;   // 最大工具调用轮数
+    private static final int MAX_TOTAL_CALLS = 20;    // 单次请求全局工具调用上限
+    private final ExecutorService toolExecutor = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "tool-exec"); t.setDaemon(true); return t;
+    });
 
     public AiSdkChatServiceImpl(List<Tool> tools, PendingMediaQueue mediaQueue) {
         this.tools = tools;
@@ -71,45 +77,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
         log.info("FC: {}", timedMsg);
         addUserMsg(timedMsg);
 
-        MultiModalConversationParam param = buildParam();
-        MultiModalConversationResult result = null;
-
-        try {
-            for (int round = 0; round < 5; round++) {
-                result = conversation.call(param);
-                MultiModalMessage responseMsg = result.getOutput().getChoices().get(0).getMessage();
-                List<ToolCallBase> toolCalls = responseMsg.getToolCalls();
-
-                if (toolCalls == null || toolCalls.isEmpty()) break;
-
-                messages.add(responseMsg);
-                for (ToolCallBase tc : toolCalls) {
-                    if (tc instanceof ToolCallFunction tcf) {
-                        ToolCallFunction.CallFunction func = tcf.getFunction();
-                        String toolResult = executeTool(func.getName(), func.getArguments());
-                        messages.add(MultiModalMessage.builder()
-                                .role("tool").toolCallId(tc.getId())
-                                .content(singletonText(toolResult)).build());
-                    }
-                }
-                param = buildParam();
-            }
-
-            String reply = extractText(result);
-            if (reply.isBlank()) {
-                result = conversation.call(param);
-                reply = extractText(result);
-            }
-            if (reply.isBlank()) reply = "AI暂时无法回复，请稍后再试";
-            addAssistantMsg(reply);
-            recordUsage(result);
-            trimContext();
-            return reply;
-
-        } catch (ApiException | NoApiKeyException | UploadFileException e) {
-            log.error("FC 失败", e);
-            return "AI暂时无法回复，请稍后再试";
-        }
+        return doToolLoop(buildParam());
     }
 
     @Override
@@ -133,26 +101,58 @@ public class AiSdkChatServiceImpl implements AiChatService {
             }
         }
 
-        MultiModalConversationParam param = buildParam();
+        return doToolLoop(buildParam());
+    }
+
+    /** 核心：工具调用循环（并行 + 去重 + 上限） */
+    private String doToolLoop(MultiModalConversationParam param) {
         MultiModalConversationResult result = null;
+        Set<String> calledSignatures = new HashSet<>();
+        int totalCalls = 0;
+
         try {
-            for (int round = 0; round < 5; round++) {
+            for (int round = 0; round < MAX_TOOL_ROUNDS; round++) {
                 result = conversation.call(param);
                 MultiModalMessage responseMsg = result.getOutput().getChoices().get(0).getMessage();
                 List<ToolCallBase> toolCalls = responseMsg.getToolCalls();
+
                 if (toolCalls == null || toolCalls.isEmpty()) break;
                 messages.add(responseMsg);
+
+                // 并行执行所有工具调用
+                List<ToolCallFunction> validCalls = new ArrayList<>();
                 for (ToolCallBase tc : toolCalls) {
                     if (tc instanceof ToolCallFunction tcf) {
-                        ToolCallFunction.CallFunction func = tcf.getFunction();
-                        String toolResult = executeTool(func.getName(), func.getArguments());
-                        messages.add(MultiModalMessage.builder()
-                                .role("tool").toolCallId(tc.getId())
-                                .content(singletonText(toolResult)).build());
+                        String sig = tcf.getFunction().getName() + "|" + tcf.getFunction().getArguments();
+                        if (!calledSignatures.add(sig)) {
+                            log.info("跳过重复调用: {}", sig);
+                            continue;
+                        }
+                        if (++totalCalls > MAX_TOTAL_CALLS) {
+                            log.warn("已达工具调用上限 {}", MAX_TOTAL_CALLS);
+                            break;
+                        }
+                        validCalls.add(tcf);
                     }
                 }
+
+                // 并行执行
+                List<CompletableFuture<Void>> futures = validCalls.stream()
+                        .map(tcf -> CompletableFuture.runAsync(() -> {
+                            ToolCallFunction.CallFunction func = tcf.getFunction();
+                            String toolResult = executeTool(func.getName(), func.getArguments());
+                            synchronized (messages) {
+                                messages.add(MultiModalMessage.builder()
+                                        .role("tool").toolCallId(tcf.getId())
+                                        .content(singletonText(toolResult)).build());
+                            }
+                        }, toolExecutor))
+                        .toList();
+                CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
+
                 param = buildParam();
             }
+
             String reply = extractText(result);
             if (reply.isBlank()) {
                 result = conversation.call(param);
@@ -163,8 +163,9 @@ public class AiSdkChatServiceImpl implements AiChatService {
             recordUsage(result);
             trimContext();
             return reply;
+
         } catch (ApiException | NoApiKeyException | UploadFileException e) {
-            log.error("防抖批次处理失败", e);
+            log.error("FC 失败", e);
             return "AI暂时无法回复，请稍后再试";
         }
     }
