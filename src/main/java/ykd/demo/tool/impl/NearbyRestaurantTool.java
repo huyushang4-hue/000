@@ -100,8 +100,12 @@ public class NearbyRestaurantTool implements Tool {
                         ? poi.get("tel").asText() : "暂无电话";
                 String rating = poi.has("biz_ext") && poi.get("biz_ext").has("rating")
                         ? poi.get("biz_ext").get("rating").asText() : "暂无评分";
-                String cost = poi.has("biz_ext") && poi.get("biz_ext").has("cost")
-                        ? poi.get("biz_ext").get("cost").asText() : "暂无";
+                String cost = "暂无";
+                if (poi.has("biz_ext") && poi.get("biz_ext").has("cost")
+                        && poi.get("biz_ext").get("cost").isArray()
+                        && poi.get("biz_ext").get("cost").size() > 0) {
+                    cost = poi.get("biz_ext").get("cost").get(0).asText();
+                }
                 String shopHours = poi.has("shopinfo") && poi.get("shopinfo").has("shop_hours")
                         ? poi.get("shopinfo").get("shop_hours").asText() : "";
 

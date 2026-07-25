@@ -5,7 +5,6 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import ykd.demo.service.AiChatService;
-import ykd.demo.service.WeatherService;
 
 import java.util.Scanner;
 
@@ -15,11 +14,9 @@ import java.util.Scanner;
 public class CliRunner implements CommandLineRunner {
     private static final String VERSION = "1.0.0";
     private final long startTime;
-    private final WeatherService weatherService;
     private final AiChatService aiChatService;
 
-    public CliRunner(WeatherService weatherService, AiChatService aiChatService) {
-        this.weatherService = weatherService;
+    public CliRunner(AiChatService aiChatService) {
         this.startTime = System.currentTimeMillis();
         this.aiChatService = aiChatService;
     }
