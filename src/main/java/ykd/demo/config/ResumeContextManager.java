@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.nio.file.*;
 
-/** 持久化 / 恢复 iLink 登录会话，避免每次重启扫码 */
+/** 持久化 / 恢复 iLink 登录会话，支持多 Bot */
 @Slf4j
 @Component
 public class ResumeContextManager {
@@ -18,8 +18,17 @@ public class ResumeContextManager {
     private static final String DIR = "sessions";
     private final Gson gson = new Gson();
 
-    /** 登录成功后保存 ResumeContext */
+    /** 保存（指定 botKey） */
+    public void saveFrom(String botKey, LoginContext loginCtx) {
+        saveToFile(botKey + ".json", loginCtx);
+    }
+
+    /** 保存（默认 bot，兼容旧调用） */
     public void saveFrom(LoginContext loginCtx) {
+        saveToFile("default.json", loginCtx);
+    }
+
+    private void saveToFile(String fileName, LoginContext loginCtx) {
         try {
             Files.createDirectories(Path.of(DIR));
             JsonObject json = new JsonObject();
@@ -27,16 +36,25 @@ public class ResumeContextManager {
             json.addProperty("userId", loginCtx.getUserId());
             json.addProperty("botId", loginCtx.getBotId());
             json.addProperty("baseUrl", loginCtx.getBaseUrl());
-            Files.writeString(Path.of(DIR, "default.json"), gson.toJson(json));
-            log.info("会话已保存 -> sessions/default.json");
+            Files.writeString(Path.of(DIR, fileName), gson.toJson(json));
+            log.info("会话已保存 -> sessions/{}", fileName);
         } catch (IOException e) {
             log.error("保存 ResumeContext 失败", e);
         }
     }
 
-    /** 启动时加载 → 重建 ResumeContext */
+    /** 加载（指定 botKey） */
+    public ResumeContext load(String botKey) {
+        return loadFromFile(botKey + ".json");
+    }
+
+    /** 加载（默认 bot，兼容旧调用） */
     public ResumeContext load() {
-        Path file = Path.of(DIR, "default.json");
+        return loadFromFile("default.json");
+    }
+
+    private ResumeContext loadFromFile(String fileName) {
+        Path file = Path.of(DIR, fileName);
         if (!Files.exists(file)) return null;
         try {
             String content = Files.readString(file);
@@ -55,7 +73,14 @@ public class ResumeContextManager {
         }
     }
 
-    /** 删除已保存的会话 */
+    /** 删除（指定 botKey） */
+    public void clear(String botKey) {
+        try {
+            Files.deleteIfExists(Path.of(DIR, botKey + ".json"));
+        } catch (IOException ignored) {}
+    }
+
+    /** 删除（默认 bot） */
     public void clear() {
         try {
             Files.deleteIfExists(Path.of(DIR, "default.json"));
