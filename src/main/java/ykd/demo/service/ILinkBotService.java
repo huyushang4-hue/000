@@ -11,6 +11,7 @@ import com.github.wechat.ilink.sdk.core.model.WeixinMessage;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import ykd.demo.config.ResumeContextManager;
+import ykd.demo.entity.Conversation;
 import ykd.demo.tool.AttachmentStore;
 
 import java.io.IOException;
@@ -30,6 +31,10 @@ public class ILinkBotService {
     private final AttachmentStore attachmentStore;
     /** 会话持久化管理器：登录成功后保存凭证，下次启动免扫码恢复微信会话 */
     private final ResumeContextManager resumeManager;
+    /** 用户服务：自动注册/查找微信用户 */
+    private final UserService userService;
+    /** 对话记录服务：持久化用户与 AI 的每轮对话 */
+    private final ConversationService conversationService;
     /** iLink SDK 客户端配置：心跳、重连等参数 */
     private final ILinkConfig config;
 
@@ -71,12 +76,15 @@ public class ILinkBotService {
         }
     }
 
-    /** Spring 构造器注入三个依赖 Bean，初始化 iLink 配置：开启心跳，间隔 5 秒维持微信长连接 */
+    /** Spring 构造器注入，初始化 iLink 配置：开启心跳，间隔 5 秒维持微信长连接 */
     public ILinkBotService(AiChatService aiChatService, AttachmentStore attachmentStore,
-                           ResumeContextManager resumeManager) {
+                           ResumeContextManager resumeManager, UserService userService,
+                           ConversationService conversationService) {
         this.aiChatService = aiChatService;
         this.attachmentStore = attachmentStore;
         this.resumeManager = resumeManager;
+        this.userService = userService;
+        this.conversationService = conversationService;
         this.config = ILinkConfig.builder()
                 .heartbeatEnabled(true).heartbeatIntervalMs(5000L).build();
     }
@@ -95,7 +103,9 @@ public class ILinkBotService {
                         .onDisconnect(createDisconnectListener())
                         .onMessage(this::handleMessages)
                         .build();
-                log.info("已恢复会话 botId={}", saved.getLoginContext().getBotId());
+                LoginContext ctx = saved.getLoginContext();
+                log.info("已恢复会话 botId={}", ctx.getBotId());
+                printBotInfo(ctx);
             } else {
                 // 无旧 session → 正常构建客户端，出二维码
                 client = ILinkClient.builder()
@@ -117,13 +127,19 @@ public class ILinkBotService {
         if (client != null) client.close();
     }
 
+    /** 打印 clawbot 上线信息 */
+    private void printBotInfo(LoginContext ctx) {
+        log.info("🤖 ClawBot 已上线 | botId={} | userId={}", ctx.getBotId(), ctx.getUserId());
+    }
+
     // ==================== 回调工厂 ====================
 
     /** 登录结果回调：成功 → 持久化会话上下文；失败 → 打印异常日志 */
     private OnLoginListener createLoginListener() {
         return new OnLoginListener() {
             @Override public void onLoginSuccess(LoginContext ctx) {
-                log.info("登录成功！BotID={}", ctx.getBotId());
+                log.info("登录成功！BotID={}, UserID={}", ctx.getBotId(), ctx.getUserId());
+                printBotInfo(ctx);
                 resumeManager.saveFrom(ctx);
             }
             @Override public void onLoginFailure(Throwable throwable) {
@@ -306,11 +322,24 @@ public class ILinkBotService {
                     .collect(Collectors.joining(" | "));
             log.info("防抖合并 {} 条: {}", batch.size(), summary);
 
+            // 自动注册/查找用户
+            ykd.demo.entity.User user = userService.findOrCreate(fromUserId, null, null);
+
+            // 保存用户消息到数据库（合并后的文本摘要）
+            String userMsgSummary = entries.stream()
+                    .map(e -> e.getOrDefault("text", "[图片/媒体]").toString())
+                    .collect(Collectors.joining("\n---\n"));
+            conversationService.saveIfNotExists(user.getId(), null,
+                    Conversation.MessageRole.USER, userMsgSummary, Conversation.MessageType.TEXT);
+
             // 核心调用：交给 AiSdkChatServiceImpl 带工具调用、多模态、上下文压缩的 AI 服务
-            String reply = aiChatService.processDebounced(entries);
+            String reply = aiChatService.processDebounced(fromUserId, entries);
             if (reply != null) {
                 cl.sendText(fromUserId, reply);
                 log.info("回复 [{}]: {}", fromUserId, reply);
+                // 保存 AI 回复到数据库
+                conversationService.saveIfNotExists(user.getId(), null,
+                        Conversation.MessageRole.ASSISTANT, reply, Conversation.MessageType.TEXT);
             }
             // 推送 AI 产出的媒体文件（生图/语音等工具生成的图片、音频）
             flushPendingImages(cl, fromUserId);

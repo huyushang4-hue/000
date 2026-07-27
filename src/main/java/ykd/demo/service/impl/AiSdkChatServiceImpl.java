@@ -17,6 +17,9 @@ import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import ykd.demo.service.AiChatService;
+import ykd.demo.service.ConversationService;
+import ykd.demo.entity.Conversation;
+import ykd.demo.repository.UserRepository;
 import ykd.demo.tool.PendingMediaQueue;
 import ykd.demo.tool.Tool;
 
@@ -31,8 +34,14 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
     /** DashScope 多模态对话客户端单例 */
     private final MultiModalConversation conversation = new MultiModalConversation();
-    /** 全局会话上下文容器：存储 user/assistant/tool/system 完整消息链，实现多轮记忆 */
-    private final List<MultiModalMessage> messages = new ArrayList<>();
+    /** 多用户会话上下文：key = fromUserId（微信ID），value = 该用户的完整 message 链 */
+    private final ConcurrentHashMap<String, List<MultiModalMessage>> userContexts = new ConcurrentHashMap<>();
+    /** 当前处理线程的用户 ID，ThreadLocal 避免跨线程污染 */
+    private final ThreadLocal<String> currentUser = new ThreadLocal<>();
+    /** 对话记录服务：加载历史对话构建初始上下文 */
+    private final ConversationService conversationService;
+    /** 用户仓库：根据 fromUserId 查找数据库用户 */
+    private final UserRepository userRepository;
 
     private final String apiKey = System.getenv("DASHSCOPE_API_KEY");
     /** Jackson 序列化器：处理 Token 用量、摘要接口返回 JSON */
@@ -67,7 +76,8 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
     /** 构造器逻辑：注入所有 Tool Bean + 媒体队列 → 初始化两个 RestClient 固定 BaseURL →
      *  批量转换工具定义 Tool.getDefinition() → SDK ToolFunction 存入 toolDefs */
-    public AiSdkChatServiceImpl(List<Tool> tools, PendingMediaQueue mediaQueue) {
+    public AiSdkChatServiceImpl(List<Tool> tools, PendingMediaQueue mediaQueue,
+                                ConversationService conversationService, UserRepository userRepository) {
         this.tools = tools;
         this.deepSeekClient = RestClient.builder().baseUrl("https://api.deepseek.com").build();
         this.dashScopeClient = RestClient.builder().baseUrl("https://dashscope.aliyuncs.com").build();
@@ -76,17 +86,43 @@ public class AiSdkChatServiceImpl implements AiChatService {
                 .map(def -> (ToolBase) ToolFunction.builder().function(def).build())
                 .toList();
         this.mediaQueue = mediaQueue;
+        this.conversationService = conversationService;
+        this.userRepository = userRepository;
     }
 
     // ==================== 文字聊天 ====================
 
     @Override
     public String chat(String userMessage) {
-        // 简单重载，底层全部走带工具调用能力的 doToolLoop，统一入口
         return chatWithTools(userMessage);
     }
 
-    /** 带 Function Calling 工具调用聊天（核心入口）：空值校验 → 给用户消息追加时间戳让模型感知提问时间 → 存入全局 messages → 进入工具调用循环 */
+    /** 获取当前线程用户的 messages 列表 */
+    private List<MultiModalMessage> getMessages() {
+        String uid = currentUser.get();
+        if (uid == null) uid = "default";
+        return userContexts.computeIfAbsent(uid, k -> new ArrayList<>());
+    }
+
+    /** 从数据库加载该用户最近对话作为初始上下文 */
+    private void loadHistoryIntoContext(String fromUserId) {
+        userRepository.findByOpenId(fromUserId).ifPresent(dbUser -> {
+            List<Conversation> history = conversationService.getRecentConversations(dbUser.getId(), 20);
+            if (history.isEmpty()) return;
+            // 反转顺序：最近的在前面，构建上下文需要从旧到新
+            List<Conversation> reversed = new ArrayList<>(history);
+            java.util.Collections.reverse(reversed);
+            for (Conversation conv : reversed) {
+                String role = conv.getRole() == Conversation.MessageRole.USER
+                        ? Role.USER.getValue() : Role.ASSISTANT.getValue();
+                getMessages().add(MultiModalMessage.builder()
+                        .role(role).content(singletonText(conv.getContent())).build());
+            }
+            log.info("已加载用户 {} 的 {} 条历史对话作为上下文", fromUserId, history.size());
+        });
+    }
+
+    /** 带 Function Calling 工具调用聊天（核心入口） */
     @Override
     public String chatWithTools(String userMessage) {
         if (userMessage == null || userMessage.isBlank()) return "请输入想说的话";
@@ -98,27 +134,38 @@ public class AiSdkChatServiceImpl implements AiChatService {
         return doToolLoop(buildParam());
     }
 
-    /** 防抖批量消息处理（图文混合）：前端短时间连发多条消息/图片，后端防抖合并一次送入大模型
-     *  - type=IMAGE：解析 base64 图片，按 DashScope 多模态规范构造 content（必须加 data:image/jpeg;base64, 前缀）
-     *  - type=TEXT：带时间戳纯文本
-     *  最终同样走工具调用循环 */
+    /** 防抖批量消息处理（图文混合）：fromUserId 标识用户，ThreadLocal 隔离上下文 */
     @Override
-    public String processDebounced(List<Map<String, Object>> entries) {
+    public String processDebounced(String fromUserId, List<Map<String, Object>> entries) {
+        currentUser.set(fromUserId);
+        try {
+            return processDebouncedInternal(entries);
+        } finally {
+            currentUser.remove();
+        }
+    }
+
+    /** 防抖内部实现：图文混合多模态，首次用户加载 DB 历史 */
+    private String processDebouncedInternal(List<Map<String, Object>> entries) {
         if (entries == null || entries.isEmpty()) return "请输入想说的话";
 
-        log.info("防抖批次 {} 条", entries.size());
+        // 首次访问该用户时，从 DB 加载最近 20 条历史对话作为上下文
+        String uid = currentUser.get();
+        if (getMessages().isEmpty() && uid != null) {
+            loadHistoryIntoContext(uid);
+        }
+
+        log.info("防抖批次 {} 条 (用户: {})", entries.size(), uid);
         for (Map<String, Object> e : entries) {
-            // 取消息类型：TEXT=纯文字，IMAGE=带 Base64 图片
             String type = (String) e.getOrDefault("type", "TEXT");
             String text = (String) e.getOrDefault("text", "");
             if ("IMAGE".equals(type)) {
                 String base64 = (String) e.getOrDefault("base64Image", "");
                 String prompt = (text == null || text.isBlank()) ? "描述这张图片" : text;
                 List<Map<String, Object>> content = new ArrayList<>();
-                // DashScope 多模态入参规范：必须加 data:image/jpeg;base64, 前缀，模型才能识别为图片
                 content.add(Collections.singletonMap("image", "data:image/jpeg;base64," + base64));
                 content.add(Collections.singletonMap("text", prompt));
-                messages.add(MultiModalMessage.builder().role(Role.USER.getValue()).content(content).build());
+                getMessages().add(MultiModalMessage.builder().role(Role.USER.getValue()).content(content).build());
             } else {
                 String timedMsg = "[" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy年M月d日 HH:mm")) + "] " + text;
                 addUserMsg(timedMsg);
@@ -147,7 +194,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
                 // 无工具调用 = 模型直接给最终答案，跳出循环
                 if (toolCalls == null || toolCalls.isEmpty()) break;
-                messages.add(responseMsg);
+                getMessages().add(responseMsg);
 
                 // 过滤：去重 + 次数限流
                 List<ToolCallFunction> validCalls = new ArrayList<>();
@@ -173,8 +220,8 @@ public class AiSdkChatServiceImpl implements AiChatService {
                             ToolCallFunction.CallFunction func = tcf.getFunction();
                             String toolResult = executeTool(func.getName(), func.getArguments());
                             // 多线程写 messages 需加锁，符合 Function Calling 规范回传 toolCallId
-                            synchronized (messages) {
-                                messages.add(MultiModalMessage.builder()
+                            synchronized (getMessages()) {
+                                getMessages().add(MultiModalMessage.builder()
                                         .role("tool").toolCallId(tcf.getId())
                                         .content(singletonText(toolResult)).build());
                             }
@@ -268,19 +315,19 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
     /** 快捷添加用户单轮文本消息到上下文 */
     private void addUserMsg(String text) {
-        messages.add(MultiModalMessage.builder().role(Role.USER.getValue()).content(singletonText(text)).build());
+        getMessages().add(MultiModalMessage.builder().role(Role.USER.getValue()).content(singletonText(text)).build());
     }
 
     /** 快捷添加助手单轮文本回复到上下文 */
     private void addAssistantMsg(String text) {
-        messages.add(MultiModalMessage.builder().role(Role.ASSISTANT.getValue()).content(singletonText(text)).build());
+        getMessages().add(MultiModalMessage.builder().role(Role.ASSISTANT.getValue()).content(singletonText(text)).build());
     }
 
     /** 构建请求参数：固定使用 qwen3.7-plus 模型，携带完整 messages + 全部工具定义，每次工具循环都会重新构建 */
     private MultiModalConversationParam buildParam() {
         return MultiModalConversationParam.builder()
                 .apiKey(apiKey).model("qwen3.7-plus")
-                .messages(messages).tools(toolDefs).build();
+                .messages(getMessages()).tools(toolDefs).build();
     }
 
     /** 遍历多模态 content 数组，提取 type=text 的文本内容，兼容 DashScope 返回体结构 */
@@ -327,22 +374,22 @@ public class AiSdkChatServiceImpl implements AiChatService {
      *  先放 system 历史摘要 + 再放最近 KEEP_ROUNDS=10 轮原始对话 */
 
     private void trimContext() {
-        int rounds = (messages.size() - 1) / 2;
+        List<MultiModalMessage> msgs = getMessages();
+        int rounds = (msgs.size() - 1) / 2;
         if (rounds <= MAX_ROUNDS) return;
 
         log.info("压缩 {} 轮对话...", rounds);
-        int keepStart = messages.size() - KEEP_ROUNDS * 2;
+        int keepStart = msgs.size() - KEEP_ROUNDS * 2;
 
-        // 调用 DeepSeek 做老旧历史摘要，300-500 字中文
-        String summary = summarize(messages.subList(1, keepStart));
-        if (summary == null || summary.isBlank()) return;  // 摘要失败降级：不做压缩，保留原上下文
+        String summary = summarize(msgs.subList(1, keepStart));
+        if (summary == null || summary.isBlank()) return;
 
-        List<MultiModalMessage> kept = new ArrayList<>(messages.subList(keepStart, messages.size()));
-        messages.clear();
-        messages.add(MultiModalMessage.builder()
+        List<MultiModalMessage> kept = new ArrayList<>(msgs.subList(keepStart, msgs.size()));
+        msgs.clear();
+        msgs.add(MultiModalMessage.builder()
                 .role(Role.SYSTEM.getValue())
                 .content(singletonText("【历史摘要】" + summary)).build());
-        messages.addAll(kept);
+        msgs.addAll(kept);
     }
 
     /** DeepSeek 摘要方法：拼接老旧对话 → 手动 JSON 转义（防反斜杠/双引号破坏 JSON）→ 调 DeepSeek 接口 → 返回摘要文本 */

@@ -5,7 +5,12 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import ykd.demo.service.AiChatService;
+import ykd.demo.service.ConversationService;
+import ykd.demo.service.UserService;
+import ykd.demo.entity.User;
+import ykd.demo.entity.Conversation;
 
+import java.util.List;
 import java.util.Scanner;
 
 @Order(2)
@@ -15,10 +20,15 @@ public class CliRunner implements CommandLineRunner {
     private static final String VERSION = "1.0.0";
     private final long startTime;
     private final AiChatService aiChatService;
+    private final UserService userService;
+    private final ConversationService conversationService;
 
-    public CliRunner(AiChatService aiChatService) {
+    public CliRunner(AiChatService aiChatService,
+                    UserService userService, ConversationService conversationService) {
         this.startTime = System.currentTimeMillis();
         this.aiChatService = aiChatService;
+        this.userService = userService;
+        this.conversationService = conversationService;
     }
 
     @Override
@@ -40,6 +50,12 @@ public class CliRunner implements CommandLineRunner {
                         break;
                     case "status":
                         showStatus();
+                        break;
+                    case "users":
+                        showUsers();
+                        break;
+                    case "history":
+                        showHistory();
                         break;
                     case "test":
                         int x = 1 / 0;
@@ -79,6 +95,8 @@ public class CliRunner implements CommandLineRunner {
         System.out.println("help     - 显示此帮助信息");
         System.out.println("version  - 显示程序版本");
         System.out.println("status   - 显示程序运行状态");
+        System.out.println("users    - 查看所有用户");
+        System.out.println("history  - 查看最近聊天记录");
         System.out.println("exit     - 退出程序");
         System.out.println("==========================");
     }
@@ -94,5 +112,41 @@ public class CliRunner implements CommandLineRunner {
         System.out.println("内存使用：" + freeMB + "MB / " + totalMB + "MB");
         System.out.println("CPU 核数：" + cores);
         System.out.println("===============");
+    }
+
+    private void showUsers() {
+        List<User> users = userService.findAll();
+        if (users.isEmpty()) {
+            System.out.println("暂无用户");
+            return;
+        }
+        System.out.println("=== 用户列表 (共" + users.size() + "人) ===");
+        System.out.printf("%-4s %-40s %-12s %s%n", "ID", "OpenID", "状态", "创建时间");
+        for (User u : users) {
+            System.out.printf("%-4d %-40s %-12s %s%n",
+                    u.getId(), u.getOpenId(), u.getStatus(), u.getCreatedAt());
+        }
+    }
+
+    private void showHistory() {
+        List<User> users = userService.findAll();
+        if (users.isEmpty()) {
+            System.out.println("暂无用户，没有聊天记录");
+            return;
+        }
+        User first = users.get(0);
+        List<Conversation> convs = conversationService.getRecentConversations(first.getId(), 20);
+        if (convs.isEmpty()) {
+            System.out.println("用户 " + first.getOpenId() + " 暂无聊天记录");
+            return;
+        }
+        List<Conversation> reversed = new java.util.ArrayList<>(convs);
+        java.util.Collections.reverse(reversed);
+        System.out.println("=== " + first.getOpenId() + " 的最近对话 ===");
+        for (Conversation c : reversed) {
+            String role = c.getRole() == Conversation.MessageRole.USER ? "🧑" : "🤖";
+            String content = c.getContent().length() > 80 ? c.getContent().substring(0, 80) + "..." : c.getContent();
+            System.out.println(role + " " + content);
+        }
     }
 }

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YKD Robot 管理后台</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#f0f2f5;min-height:100vh}
+.header{background:linear-gradient(135deg,#1677ff,#0958d9);color:#fff;padding:16px 24px}
+.header h1{font-size:20px}
+.container{max-width:1200px;margin:0 auto;padding:20px;display:grid;grid-template-columns:300px 1fr;gap:20px}
+.card{background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.1);padding:16px}
+.card h2{font-size:16px;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #1677ff}
+.user-item{padding:10px;cursor:pointer;border-radius:6px;margin-bottom:6px;transition:all .2s}
+.user-item:hover{background:#e6f4ff}
+.user-item.active{background:#bae0ff}
+.user-item .openid{font-size:12px;color:#666;word-break:break-all}
+.user-item .status{font-size:11px;padding:2px 6px;border-radius:4px;display:inline-block;margin-top:4px}
+.status-ACTIVE{background:#d9f7be;color:#389e0d}
+.status-BLOCKED{background:#ffd8bf;color:#d4380d}
+.msg{padding:10px 14px;margin:6px 0;border-radius:8px;max-width:80%}
+.msg.USER{background:#e6f4ff;margin-right:auto}
+.msg.ASSISTANT{background:#f0f2f5;margin-left:auto}
+.msg .role-label{font-size:11px;color:#888;margin-bottom:4px}
+.msg .text{font-size:14px;line-height:1.6;word-break:break-word}
+.msg .time{font-size:10px;color:#bbb;margin-top:4px}
+.empty{text-align:center;color:#999;padding:40px}
+</style>
+</head>
+<body>
+<div class="header"><h1>🤖 YKD Robot 管理后台</h1></div>
+<div class="container">
+  <div class="card" style="max-height:80vh;overflow-y:auto">
+    <h2>👤 用户列表</h2>
+    <div id="userList"><div class="empty">加载中...</div></div>
+  </div>
+  <div class="card" style="max-height:80vh;overflow-y:auto">
+    <h2 id="chatTitle">💬 对话记录</h2>
+    <div id="chatList"><div class="empty">请选择一个用户</div></div>
+  </div>
+</div>
+<script>
+let currentUserId=null;
+async function loadUsers(){
+  const res=await fetch('/api/admin/users');
+  const users=await res.json();
+  const el=document.getElementById('userList');
+  if(users.length===0){el.innerHTML='<div class="empty">暂无用户</div>';return}
+  el.innerHTML=users.map(u=>`
+    <div class="user-item" data-id="${u.id}" onclick="selectUser(${u.id},'${u.openId}')">
+      <div>#${u.id}</div>
+      <div class="openid">${u.openId}</div>
+      <span class="status status-${u.status}">${u.status}</span>
+    </div>
+  `).join('');
+}
+async function selectUser(id,openId){
+  currentUserId=id;
+  document.querySelectorAll('.user-item').forEach(e=>e.classList.remove('active'));
+  document.querySelector(`.user-item[data-id="${id}"]`).classList.add('active');
+  document.getElementById('chatTitle').textContent='💬 '+openId;
+  const res=await fetch('/api/admin/conversations?userId='+id);
+  const convs=await res.json();
+  const el=document.getElementById('chatList');
+  if(convs.length===0){el.innerHTML='<div class="empty">暂无对话</div>';return}
+  el.innerHTML=convs.map(c=>{
+    const role=c.role==='USER'?'🧑 用户':'🤖 AI';
+    return `<div class="msg ${c.role}">
+      <div class="role-label">${role}</div>
+      <div class="text">${escapeHtml(c.content)}</div>
+      <div class="time">${c.createdAt}</div>
+    </div>`;
+  }).join('');
+}
+function escapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+loadUsers();
+</script>
+</body>
+</html>

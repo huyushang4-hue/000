@@ -9,6 +9,6 @@ public interface AiChatService {
     String chatWithTools(String userMessage);
     String speechToText(byte[] audioBytes);
     List<Map.Entry<byte[], String>> drainPendingImages();
-    /** 防抖批次：混合文字+图片一起处理 */
-    String processDebounced(List<Map<String, Object>> entries);
+    /** 防抖批次：混合文字+图片一起处理，fromUserId 用于多用户上下文隔离 */
+    String processDebounced(String fromUserId, List<Map<String, Object>> entries);
 }
