@@ -34,7 +34,7 @@ public class TranslatorTool implements Tool {
                     .formatted(targetLang, text);
             String escaped = prompt.replace("\\", "\\\\").replace("\"", "\\\"")
                     .replace("\n", "\\n");
-            String body = "{\"model\":\"qwen3.7-plus\",\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}]}"
+            String body = "{\"model\":\"qwen3.7-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}]}"
                     .formatted(escaped);
 
             String json = dashScopeClient.post()

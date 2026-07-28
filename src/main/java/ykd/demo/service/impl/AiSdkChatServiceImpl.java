@@ -326,7 +326,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
     /** 构建请求参数：固定使用 qwen3.7-plus 模型，携带完整 messages + 全部工具定义，每次工具循环都会重新构建 */
     private MultiModalConversationParam buildParam() {
         return MultiModalConversationParam.builder()
-                .apiKey(apiKey).model("qwen3.7-plus")
+                .apiKey(apiKey).model("qwen3.7-flash")
                 .messages(getMessages()).tools(toolDefs).build();
     }
 

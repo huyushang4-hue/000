@@ -101,8 +101,11 @@ public class ILinkBotService {
 
     /** 启动：恢复所有已保存的 bot，并弹一个新二维码等待新用户扫码 */
     public void start() {
-        // 1. 恢复所有已保存的 bot（之前的会话）
+        boolean hasRestored = false;
+
+        // 1. 恢复所有已保存的 bot
         try {
+            hasRestored = Files.list(Path.of("sessions")).findAny().isPresent();
             Files.list(Path.of("sessions")).forEach(f -> {
                 String key = f.getFileName().toString().replace(".json", "");
                 if (!botPool.containsKey(key)) {
@@ -111,13 +114,14 @@ public class ILinkBotService {
             });
         } catch (IOException ignored) {}
 
-        // 2. 如果没有任何 bot 在运行，启动一个默认的（兼容旧逻辑）
+        // 2. 没有任何 session → 启动默认 bot 弹出二维码
         if (botPool.isEmpty()) {
-            resumeExisting("default");
+            start("default");
+            return;  // 不需要 offerNewBot，loginSuccess 里会自动触发
         }
 
-        // 3. 弹一个新二维码，等待下一个用户扫码
-        if (botPool.values().stream().anyMatch(b -> b.client != null)) {
+        // 3. 已有恢复的 bot → 额外弹一个二维码给新用户
+        if (hasRestored) {
             offerNewBot();
         }
     }
@@ -161,10 +165,10 @@ public class ILinkBotService {
                     .build();
             String qr = bot.client.executeLogin();
             log.info("");
-            log.info("╔══════════════════════════════════════════╗");
-            log.info("║  📱 [{}] 等待新用户扫码...               ║", key);
-            log.info("║  {}", qr);
-            log.info("╚══════════════════════════════════════════╝");
+            log.info("╔══════════════════════════════════════════════════════════════════════════════════════════════════════════╗");
+            log.info("  📱 [{}] 等待新用户扫码...", key);
+            log.info("  {}", qr);
+            log.info("╚══════════════════════════════════════════════════════════════════════════════════════════════════════════╝");
             log.info("");
         } catch (Exception e) {
             log.error("[{}] 创建二维码失败", key, e);
