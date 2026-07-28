@@ -50,7 +50,7 @@ public class RecognizeImageTool implements Tool {
 
             MultiModalConversationResult result = visionConv.call(
                     MultiModalConversationParam.builder()
-                            .apiKey(apiKey).model("qwen3.7-flash")
+                            .apiKey(apiKey).model("qwen3.7-plus")
                             .messages(Collections.singletonList(userMsg)).build());
 
             List<Map<String, Object>> out = result.getOutput().getChoices().get(0).getMessage().getContent();

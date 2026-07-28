@@ -18,9 +18,11 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import ykd.demo.service.AiChatService;
 import ykd.demo.service.ConversationService;
+import ykd.demo.service.CheckpointService;
 import ykd.demo.entity.Conversation;
 import ykd.demo.repository.UserRepository;
 import ykd.demo.tool.PendingMediaQueue;
+import ykd.demo.agent.ErrorCategory;
 import ykd.demo.tool.Tool;
 
 import java.time.LocalDateTime;
@@ -42,6 +44,8 @@ public class AiSdkChatServiceImpl implements AiChatService {
     private final ConversationService conversationService;
     /** 用户仓库：根据 fromUserId 查找数据库用户 */
     private final UserRepository userRepository;
+    /** 检查点服务：Agent Loop 进度保存 */
+    private final CheckpointService checkpointService;
 
     private final String apiKey = System.getenv("DASHSCOPE_API_KEY");
     /** Jackson 序列化器：处理 Token 用量、摘要接口返回 JSON */
@@ -61,7 +65,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
     /** 最后一次 Token 消耗信息，用于日志监控 */
     private String lastUsage = "";
-    /** 上下文最大轮数，超过触发 DeepSeek 摘要压缩 */
+    /** trimContext 前的上下文轮数阈值 */
     private static final int MAX_ROUNDS = 50;
     /** 压缩后保留最近 10 轮原始对话 */
     private static final int KEEP_ROUNDS = 10;
@@ -77,7 +81,8 @@ public class AiSdkChatServiceImpl implements AiChatService {
     /** 构造器逻辑：注入所有 Tool Bean + 媒体队列 → 初始化两个 RestClient 固定 BaseURL →
      *  批量转换工具定义 Tool.getDefinition() → SDK ToolFunction 存入 toolDefs */
     public AiSdkChatServiceImpl(List<Tool> tools, PendingMediaQueue mediaQueue,
-                                ConversationService conversationService, UserRepository userRepository) {
+                                ConversationService conversationService, UserRepository userRepository,
+                                CheckpointService checkpointService) {
         this.tools = tools;
         this.deepSeekClient = RestClient.builder().baseUrl("https://api.deepseek.com").build();
         this.dashScopeClient = RestClient.builder().baseUrl("https://dashscope.aliyuncs.com").build();
@@ -88,6 +93,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
         this.mediaQueue = mediaQueue;
         this.conversationService = conversationService;
         this.userRepository = userRepository;
+        this.checkpointService = checkpointService;
     }
 
     // ==================== 文字聊天 ====================
@@ -101,7 +107,20 @@ public class AiSdkChatServiceImpl implements AiChatService {
     private List<MultiModalMessage> getMessages() {
         String uid = currentUser.get();
         if (uid == null) uid = "default";
-        return userContexts.computeIfAbsent(uid, k -> new ArrayList<>());
+        return userContexts.computeIfAbsent(uid, k -> {
+            ArrayList<MultiModalMessage> list = new ArrayList<>();
+            // 系统指令：引导 LLM 正确使用工具
+            list.add(MultiModalMessage.builder()
+                    .role(Role.SYSTEM.getValue())
+                    .content(singletonText("""
+                        你是智能助手。当且仅当用户要求定时提醒/通知/闹钟时：
+                        1. 先调 get_datetime 获取当前时间
+                        2. 立即调 schedule_task 创建任务（只调一次）
+                        3. 创建成功后回复"好的，已帮你创建定时提醒！"
+                        其他场景正常使用对应工具即可。"""))
+                    .build());
+            return list;
+        });
     }
 
     /** 从数据库加载该用户最近对话作为初始上下文 */
@@ -184,7 +203,10 @@ public class AiSdkChatServiceImpl implements AiChatService {
         MultiModalConversationResult result = null;
         /** 去重容器：HashSet 记录已执行的"工具名|参数"签名，防止模型反复调用相同工具+参数造成死循环 */
         Set<String> calledSignatures = new HashSet<>();
+        /** 工具结果缓存：key=签名，value=执行结果，用于去重时直接返回缓存 */
+        Map<String, String> resultCache = new HashMap<>();
         int totalCalls = 0;
+        boolean taskCreated = false;  // 防止重复创建任务
 
         try {
             for (int round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -196,30 +218,46 @@ public class AiSdkChatServiceImpl implements AiChatService {
                 if (toolCalls == null || toolCalls.isEmpty()) break;
                 getMessages().add(responseMsg);
 
-                // 过滤：去重 + 次数限流
+                // 过滤：去重 + 次数限流 + 防止重复创建任务
+                int skippedCount = 0;
                 List<ToolCallFunction> validCalls = new ArrayList<>();
                 for (ToolCallBase tc : toolCalls) {
                     if (tc instanceof ToolCallFunction tcf) {
-                        // 工具签名 = 工具名|参数 JSON，防止重复调用
                         String sig = tcf.getFunction().getName() + "|" + tcf.getFunction().getArguments();
                         if (!calledSignatures.add(sig)) {
-                            log.info("跳过重复调用: {}", sig);
+                            // 去重：直接返回缓存的结果，不让 LLM 卡住
+                            String cached = resultCache.getOrDefault(sig, "工具已执行过，请继续下一步");
+                            synchronized (getMessages()) {
+                                getMessages().add(MultiModalMessage.builder()
+                                        .role("tool").toolCallId(tcf.getId())
+                                        .content(singletonText(cached)).build());
+                            }
+                            log.info("去重但返回缓存: {}", sig);
+                            skippedCount++;
                             continue;
                         }
                         if (++totalCalls > MAX_TOTAL_CALLS) {
                             log.warn("已达工具调用上限 {}", MAX_TOTAL_CALLS);
                             break;
                         }
+                        // 已有任务创建，跳过重复并终止
+                        if ("schedule_task".equals(tcf.getFunction().getName())) {
+                            if (taskCreated) { skippedCount++; continue; }
+                            taskCreated = true;
+                        }
                         validCalls.add(tcf);
                     }
                 }
+
+                if (validCalls.isEmpty()) break;
 
                 // CompletableFuture 并行执行：多个不同工具同时跑，不串行排队
                 List<CompletableFuture<Void>> futures = validCalls.stream()
                         .map(tcf -> CompletableFuture.runAsync(() -> {
                             ToolCallFunction.CallFunction func = tcf.getFunction();
                             String toolResult = executeTool(func.getName(), func.getArguments());
-                            // 多线程写 messages 需加锁，符合 Function Calling 规范回传 toolCallId
+                            String sig = func.getName() + "|" + func.getArguments();
+                            resultCache.put(sig, toolResult);
                             synchronized (getMessages()) {
                                 getMessages().add(MultiModalMessage.builder()
                                         .role("tool").toolCallId(tcf.getId())
@@ -230,6 +268,9 @@ public class AiSdkChatServiceImpl implements AiChatService {
                 // 阻塞等待所有并行工具全部执行完毕，确保下一轮请求能拿到完整数据
                 CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
 
+                // 每轮后保存检查点（Agent Loop checkpoint）
+                saveCheckpoint(round, totalCalls);
+
                 param = buildParam();
             }
 
@@ -239,21 +280,45 @@ public class AiSdkChatServiceImpl implements AiChatService {
                 result = conversation.call(param);
                 reply = extractText(result);
             }
-            if (reply.isBlank()) reply = "AI暂时无法回复，请稍后再试";
+            // 最终兜底：从消息历史中找最后一个 assistant 文本
+            if (reply.isBlank()) {
+                List<MultiModalMessage> msgs = getMessages();
+                for (int i = msgs.size() - 1; i >= 0; i--) {
+                    MultiModalMessage m = msgs.get(i);
+                    if (!"assistant".equals(m.getRole())) continue;  // 只要 AI 回复
+                    String text = extractText(m);
+                    if (!text.isBlank()) {
+                        reply = text;
+                        break;
+                    }
+                }
+            }
+            if (reply.isBlank()) reply = taskCreated ? "好的，已帮你创建定时提醒！" : "AI处理超时，请简化问题重新尝试";
             addAssistantMsg(reply);
             recordUsage(result);
             trimContext();
             return reply;
 
         } catch (ApiException | NoApiKeyException | UploadFileException e) {
-            log.error("FC 失败", e);
-            return "AI暂时无法回复，请稍后再试";
+            ErrorCategory category = ErrorCategory.classify(e);
+            log.error("FC 失败 [{}]: {}", category, e.getMessage());
+
+            return switch (category) {
+                case RETRYABLE -> "网络不稳定，正在重试中，请稍候...";
+                case AUTH_REQUIRED -> "操作需要授权，请联系管理员处理。";
+                case DEGRADABLE -> "操作暂时降级处理，已保存当前进度。";
+                case FATAL -> "AI处理超时，请简化问题重新尝试";
+            };
         }
     }
 
-    /** 工具分发器：Gson 解析模型返回的工具入参 JSON → 遍历 Spring 注入的所有 Tool 实现 → 匹配名称 → 执行业务逻辑 → 未匹配返回兜底 */
+    /** 工具分发器：解析参数 → 自动注入当前用户 openId → 执行业务逻辑 */
     private String executeTool(String name, String arguments) {
         JsonObject args = JsonParser.parseString(arguments).getAsJsonObject();
+        // 自动注入当前用户 ID
+        if ("schedule_task".equals(name) && currentUser.get() != null) {
+            args.addProperty("userId", currentUser.get());
+        }
         for (Tool tool : tools) {
             if (tool.getDefinition().getName().equals(name)) {
                 log.info("Tool: {} -> {}", name, arguments);
@@ -326,11 +391,11 @@ public class AiSdkChatServiceImpl implements AiChatService {
     /** 构建请求参数：固定使用 qwen3.7-plus 模型，携带完整 messages + 全部工具定义，每次工具循环都会重新构建 */
     private MultiModalConversationParam buildParam() {
         return MultiModalConversationParam.builder()
-                .apiKey(apiKey).model("qwen3.7-flash")
+                .apiKey(apiKey).model("qwen3.7-plus")
                 .messages(getMessages()).tools(toolDefs).build();
     }
 
-    /** 遍历多模态 content 数组，提取 type=text 的文本内容，兼容 DashScope 返回体结构 */
+    /** 遍历多模态 content 数组，提取 type=text 的文本内容 */
     private String extractText(MultiModalConversationResult result) {
         try {
             if (result == null) return "";
@@ -348,7 +413,22 @@ public class AiSdkChatServiceImpl implements AiChatService {
         return "";
     }
 
-    /** 解析返回体 usage，兼容两种 key 命名（input_tokens/inputTokens），拼接日志用于计费和用量监控 */
+    /** 从 MultiModalMessage 提取文本 */
+    private String extractText(MultiModalMessage msg) {
+        try {
+            List<Map<String, Object>> content = msg.getContent();
+            if (content == null) return "";
+            for (Map<String, Object> item : content) {
+                if (item.containsKey("text")) {
+                    Object t = item.get("text");
+                    return t != null ? t.toString() : "";
+                }
+            }
+        } catch (Exception ignored) {}
+        return "";
+    }
+
+    /** 解析返回体 usage，兼容两种 key 命名 */
     private void recordUsage(MultiModalConversationResult result) {
         try {
             if (result == null) return;
@@ -369,9 +449,20 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
     // ==================== 上下文压缩 ====================
 
-    /** 计算实际对话轮数 (messages-1)/2，超 MAX_ROUNDS=50 轮触发压缩：
-     *  截取前面老旧历史 → DeepSeek v4-flash 摘要 → 清空 messages →
-     *  先放 system 历史摘要 + 再放最近 KEEP_ROUNDS=10 轮原始对话 */
+    /** 保存 Agent Loop 检查点 */
+    private void saveCheckpoint(int round, int totalCalls) {
+        try {
+            String uid = currentUser.get();
+            if (uid == null) return;
+            userRepository.findByOpenId(uid).ifPresent(dbUser ->
+                checkpointService.save(uid, null, dbUser.getId(),
+                        round, MAX_TOOL_ROUNDS, totalCalls, 0,
+                        "round=" + round + ", calls=" + totalCalls)
+            );
+        } catch (Exception ignored) {}
+    }
+
+    /** trimContext：计算实际对话轮数 */
 
     private void trimContext() {
         List<MultiModalMessage> msgs = getMessages();

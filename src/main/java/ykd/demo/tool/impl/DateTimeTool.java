@@ -19,8 +19,8 @@ public class DateTimeTool implements Tool {
 
     @Override
     public FunctionDefinition getDefinition() {
-        return func("get_datetime", "获取当前日期、时间、星期几等时间信息", """
-            {"type":"object","properties":{"query":{"type":"string","enum":["date","time","datetime","weekday"],"description":"查询类型：date=当前日期, time=当前时间, datetime=日期和时间, weekday=星期几"}},"required":["query"]}
+        return func("get_datetime", "获取当前日期时间。返回格式为 yyyy-MM-dd HH:mm，可直接用于 schedule_task 的 executeTime 参数", """
+            {"type":"object","properties":{"query":{"type":"string","enum":["date","time","datetime","weekday"],"description":"查询类型：date=日期, time=时间, datetime=日期时间, weekday=星期几"}},"required":["query"]}
             """);
     }
 
@@ -29,14 +29,13 @@ public class DateTimeTool implements Tool {
         String query = args.get("query").getAsString();
         log.info("Tool: get_datetime, query={}", query);
         return switch (query.toLowerCase()) {
-            case "date" -> "当前日期：" + LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE);
-            case "time" -> "当前时间：" + LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
+            case "date" -> "当前日期：" + LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+            case "time" -> "当前时间：" + LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"));
             case "weekday" -> "今天是：" + LocalDate.now().getDayOfWeek()
                     .getDisplayName(TextStyle.FULL, Locale.CHINA);
-            case "datetime" -> "当前时间：" + LocalDateTime.now()
-                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
             default -> "当前时间：" + LocalDateTime.now()
-                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+                    + "。你可基于此时间加上用户要求的延迟秒数，直接传给 schedule_task 的 executeTime";
         };
     }
 }

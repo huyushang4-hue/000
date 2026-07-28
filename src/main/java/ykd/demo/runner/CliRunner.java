@@ -7,8 +7,10 @@ import org.springframework.stereotype.Component;
 import ykd.demo.service.AiChatService;
 import ykd.demo.service.ConversationService;
 import ykd.demo.service.UserService;
+import ykd.demo.service.TaskSchedulerService;
 import ykd.demo.entity.User;
 import ykd.demo.entity.Conversation;
+import ykd.demo.entity.ScheduledTask;
 
 import java.util.List;
 import java.util.Scanner;
@@ -22,13 +24,16 @@ public class CliRunner implements CommandLineRunner {
     private final AiChatService aiChatService;
     private final UserService userService;
     private final ConversationService conversationService;
+    private final TaskSchedulerService taskService;
 
     public CliRunner(AiChatService aiChatService,
-                    UserService userService, ConversationService conversationService) {
+                    UserService userService, ConversationService conversationService,
+                    TaskSchedulerService taskService) {
         this.startTime = System.currentTimeMillis();
         this.aiChatService = aiChatService;
         this.userService = userService;
         this.conversationService = conversationService;
+        this.taskService = taskService;
     }
 
     @Override
@@ -56,6 +61,9 @@ public class CliRunner implements CommandLineRunner {
                         break;
                     case "history":
                         showHistory();
+                        break;
+                    case "tasks":
+                        showTasks();
                         break;
                     case "test":
                         int x = 1 / 0;
@@ -97,6 +105,7 @@ public class CliRunner implements CommandLineRunner {
         System.out.println("status   - 显示程序运行状态");
         System.out.println("users    - 查看所有用户");
         System.out.println("history  - 查看最近聊天记录");
+        System.out.println("tasks    - 查看所有定时任务");
         System.out.println("exit     - 退出程序");
         System.out.println("==========================");
     }
@@ -147,6 +156,23 @@ public class CliRunner implements CommandLineRunner {
             String role = c.getRole() == Conversation.MessageRole.USER ? "🧑" : "🤖";
             String content = c.getContent().length() > 80 ? c.getContent().substring(0, 80) + "..." : c.getContent();
             System.out.println(role + " " + content);
+        }
+    }
+
+    private void showTasks() {
+        List<ScheduledTask> tasks = taskService.findAll();
+        if (tasks.isEmpty()) {
+            System.out.println("暂无定时任务");
+            return;
+        }
+        System.out.println("=== 定时任务 (共" + tasks.size() + "个) ===");
+        System.out.printf("%-4s %-8s %-12s %-20s %s%n", "ID", "类型", "状态", "名称", "执行时间/Cron");
+        for (ScheduledTask t : tasks) {
+            String time = t.getType() == ScheduledTask.TaskType.ONCE
+                    ? (t.getExecuteAt() != null ? t.getExecuteAt().toString() : "-")
+                    : (t.getCronExpression() != null ? t.getCronExpression() : "-");
+            System.out.printf("%-4d %-8s %-12s %-20s %s%n",
+                    t.getId(), t.getType(), t.getStatus(), t.getTaskName(), time);
         }
     }
 }
