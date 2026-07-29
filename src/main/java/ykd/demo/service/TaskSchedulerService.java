@@ -63,7 +63,7 @@ public class TaskSchedulerService {
     }
 
     /** 每分钟扫描一次，检查周期任务是否需要执行 */
-    @Scheduled(fixedDelay = 60_000)
+    @Scheduled(fixedDelay = 30_000)
     public void scanCronTasks() {
         List<ScheduledTask> tasks = taskRepository.findByTypeAndStatus(
                 ScheduledTask.TaskType.CRON,
@@ -71,11 +71,21 @@ public class TaskSchedulerService {
 
         for (ScheduledTask task : tasks) {
             try {
-                // 简化：周期任务每次扫描时执行
-                log.info("执行周期任务: [{}] {}", task.getId(), task.getTaskName());
+                // 检查 CRON 表达式是否匹配当前时间
+                String cron = task.getCronExpression();
+                if (cron == null || cron.isBlank()) continue;
+                // Spring CronExpression 需 6 字段，AI 可能给 5 字段（标准 cron），自动补秒
+                if (cron.split("\\s+").length == 5) cron = "0 " + cron;
+                
+                org.springframework.scheduling.support.CronExpression expr =
+                        org.springframework.scheduling.support.CronExpression.parse(cron);
+                LocalDateTime now = LocalDateTime.now();
+                LocalDateTime lastTrigger = expr.next(now.minusSeconds(60));  // 查过去60秒内的触发点
+                
+                if (lastTrigger == null || lastTrigger.isAfter(now)) continue;  // 还没到时间
+                
+                log.info("CRON 触发: [{}] {}, expr={}", task.getId(), task.getTaskName(), cron);
                 executeTask(task);
-                task.setResult("最近执行成功: " + LocalDateTime.now());
-                taskRepository.save(task);
             } catch (Exception e) {
                 log.error("周期任务 [{}] 执行失败", task.getId(), e);
             }
@@ -106,23 +116,73 @@ public class TaskSchedulerService {
         return taskRepository.save(task);
     }
 
-    /** 执行任务：调用 AI 处理并发送到微信（不触发工具调用） */
+    /** 执行任务：跑完整 Agent Loop（工具调用 + 自动决策），支持重试和变化检测 */
     private void executeTask(ScheduledTask task) {
-        String prompt = "以下是一个到期的定时提醒，请直接回复用户：\n" + task.getTaskName();
-        if (task.getTaskParams() != null && !task.getTaskParams().isBlank()) {
-            prompt += "\n参数: " + task.getTaskParams();
-        }
-        prompt += "\n(这是定时的自动消息，不需要创建新任务或调任何工具，直接文本回复即可)";
-        log.info(">>> 执行任务: id={}", task.getId());
-        String reply = aiChatService.chat(prompt);
-        log.info(">>> 任务完成: id={}, reply={}", task.getId(),
-                reply.length() > 100 ? reply.substring(0, 100) + "..." : reply);
+        int maxRetries = 2;
+        Exception lastError = null;
 
-        // 发送到微信（只发给任务关联的用户）
-        if (task.getUserId() != null) {
-            sendToUser(task.getUserId(), reply);
+        for (int attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                log.info(">>> 执行任务 attempt={}/{}: id={}, name={}",
+                        attempt + 1, maxRetries + 1, task.getId(), task.getTaskName());
+
+                // 构建 prompt：包含上次结果用于变化检测
+                StringBuilder prompt = new StringBuilder();
+                prompt.append("【系统】你是后台定时任务执行器，不是聊天助手。不要反问、不要确认、不要问频率。直接执行任务并输出结果。\n");
+                prompt.append("任务：").append(task.getTaskName());
+                if (task.getTaskParams() != null && !task.getTaskParams().isBlank()) {
+                    prompt.append("\n参数: ").append(task.getTaskParams());
+                }
+                // 注入上次结果，让 AI 对比变化
+                if (task.getResult() != null && !task.getResult().isBlank()) {
+                    prompt.append("\n\n上次搜索的结果：\n").append(task.getResult());
+                    prompt.append("\n\n请重新搜索并对比：只报告新增或变化的内容。如果和上次一样，回复[暂无变化]。");
+                } else {
+                    prompt.append("\n\n你可以调用任何需要的工具（搜索、天气等）来完成这个任务。");
+                }
+                prompt.append("\n完成后直接回复用户，不要创建新的定时任务。");
+
+                String reply = aiChatService.chatWithTools(prompt.toString());
+
+                if (reply == null || reply.isBlank() || reply.contains("AI处理超时")) {
+                    throw new RuntimeException("Agent Loop 返回空或超时: " + reply);
+                }
+
+                log.info(">>> 任务完成: id={}, reply={}",
+                        task.getId(), reply.length() > 100 ? reply.substring(0, 100) + "..." : reply);
+
+                // CRON 任务保持 PENDING 以便下次触发，ONCE 任务标记完成
+                task.setResult(reply);
+                if (task.getType() == ScheduledTask.TaskType.ONCE) {
+                    task.setStatus(ScheduledTask.TaskStatus.COMPLETED);
+                }
+                // CRON 保持 PENDING，只更新结果
+                taskRepository.save(task);
+
+                if (task.getUserId() != null && !reply.contains("暂无变化")) {
+                    sendToUser(task.getUserId(), task.getTaskName() + "：\n" + reply);
+                } else if (task.getUserId() != null) {
+                    log.info("无变化，不推送: id={}", task.getId());
+                }
+                return;
+
+            } catch (Exception e) {
+                lastError = e;
+                log.warn("任务执行失败 attempt={}: {}", attempt + 1, e.getMessage());
+                if (attempt < maxRetries) {
+                    try { Thread.sleep(2000L * (attempt + 1)); } catch (InterruptedException ignored) {}
+                }
+            }
         }
-        // 不再给所有用户发送
+
+        log.error("任务彻底失败: id={}", task.getId(), lastError);
+        task.setStatus(ScheduledTask.TaskStatus.FAILED);
+        task.setResult("失败: " + (lastError != null ? lastError.getMessage() : "未知错误"));
+        taskRepository.save(task);
+
+        if (task.getUserId() != null) {
+            sendToUser(task.getUserId(), "⚠️ 任务「" + task.getTaskName() + "」执行失败");
+        }
     }
 
     private void sendToUser(Long userId, String reply) {

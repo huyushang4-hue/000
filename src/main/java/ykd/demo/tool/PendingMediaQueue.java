@@ -19,6 +19,7 @@ public class PendingMediaQueue {
         log.info("积压队列 +1: {}", fileName);
     }
 
+    public boolean hasPending() { return !queue.isEmpty(); }
     public List<Map.Entry<byte[], String>> drain() {
         List<Map.Entry<byte[], String>> pending = new ArrayList<>(queue);
         queue.clear();

@@ -1,0 +1,18 @@
+{
+  "name": "calculator",
+  "description": "执行数学计算表达式，支持加减乘除、括号、幂运算、开方、绝对值",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "expression": {
+        "type": "string",
+        "description": "数学表达式"
+      }
+    },
+    "required": [
+      "expression"
+    ]
+  },
+  "class": "ykd.demo.tool.impl.CalculatorTool",
+  "terminal": false
+}

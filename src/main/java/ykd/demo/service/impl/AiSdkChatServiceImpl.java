@@ -252,21 +252,31 @@ public class AiSdkChatServiceImpl implements AiChatService {
                 if (validCalls.isEmpty()) break;
 
                 // CompletableFuture 并行执行：多个不同工具同时跑，不串行排队
+                final String uid = currentUser.get();
                 List<CompletableFuture<Void>> futures = validCalls.stream()
                         .map(tcf -> CompletableFuture.runAsync(() -> {
-                            ToolCallFunction.CallFunction func = tcf.getFunction();
-                            String toolResult = executeTool(func.getName(), func.getArguments());
-                            String sig = func.getName() + "|" + func.getArguments();
-                            resultCache.put(sig, toolResult);
-                            synchronized (getMessages()) {
-                                getMessages().add(MultiModalMessage.builder()
-                                        .role("tool").toolCallId(tcf.getId())
-                                        .content(singletonText(toolResult)).build());
+                            currentUser.set(uid);  // 恢复 ThreadLocal 到异步线程
+                            try {
+                                ToolCallFunction.CallFunction func = tcf.getFunction();
+                                String toolResult = executeTool(func.getName(), func.getArguments());
+                                String sig = func.getName() + "|" + func.getArguments();
+                                resultCache.put(sig, toolResult);
+                                synchronized (getMessages()) {
+                                    getMessages().add(MultiModalMessage.builder()
+                                            .role("tool").toolCallId(tcf.getId())
+                                            .content(singletonText(toolResult)).build());
+                                }
+                            } finally {
+                                currentUser.remove();
                             }
                         }, toolExecutor))
                         .toList();
                 // 阻塞等待所有并行工具全部执行完毕，确保下一轮请求能拿到完整数据
                 CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
+
+                if (validCalls.stream().anyMatch(tc -> tools.stream().anyMatch(t -> t.getDefinition().getName().equals(tc.getFunction().getName()) && t.isTerminal()))) {
+                    return "";
+                }
 
                 // 每轮后保存检查点（Agent Loop checkpoint）
                 saveCheckpoint(round, totalCalls);

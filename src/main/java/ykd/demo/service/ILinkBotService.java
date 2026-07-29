@@ -451,11 +451,15 @@ public class ILinkBotService {
 
             // 核心 AI 调用
             String reply = aiChatService.processDebounced(fromUserId, entries);
-            if (reply != null) {
+            if (reply != null && !reply.isBlank()) {
                 cl.sendText(fromUserId, reply);
                 log.info("[{}] 回复 [{}]: {}", bot.botKey, fromUserId, reply);
                 conversationService.saveIfNotExists(user.getId(), null,
                         Conversation.MessageRole.ASSISTANT, reply, Conversation.MessageType.TEXT);
+            } else if (reply != null && reply.isBlank()) {
+                // terminal 工具无文字，但可能有媒体；保存占位避免历史缺口
+                conversationService.saveIfNotExists(user.getId(), null,
+                        Conversation.MessageRole.ASSISTANT, "已完成（媒体文件）", Conversation.MessageType.TEXT);
             }
             flushPendingImages(cl, fromUserId);
         } catch (Exception e) {

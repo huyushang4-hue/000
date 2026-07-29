@@ -1,0 +1,13 @@
+{
+  "name": "get_weather",
+  "description": "查询指定城市的实时天气，返回温度/湿度/风力/空气质量等信息",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "city": {"type": "string", "description": "城市名称，如 北京、上海"}
+    },
+    "required": ["city"]
+  },
+  "class": "ykd.demo.tool.impl.GetWeatherTool",
+  "terminal": false
+}

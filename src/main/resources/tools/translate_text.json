@@ -1,0 +1,23 @@
+{
+  "name": "translate_text",
+  "description": "翻译文本，支持中英日韩法等多种语言互译",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "要翻译的文本"
+      },
+      "target_language": {
+        "type": "string",
+        "description": "目标语言"
+      }
+    },
+    "required": [
+      "text",
+      "target_language"
+    ]
+  },
+  "class": "ykd.demo.tool.impl.TranslatorTool",
+  "terminal": false
+}

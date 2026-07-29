@@ -24,14 +24,17 @@ public class GenerateImageTool implements Tool {
         this.queue = queue;
     }
 
-    @Override
+
     public FunctionDefinition getDefinition() {
         return func("generate_image", "根据文字描述生成图片", """
             {"type":"object","properties":{"prompt":{"type":"string","description":"生成图片的文字描述，最好是英文"}},"required":["prompt"]}
             """);
     }
 
-    @Override
+
+
+    public boolean isTerminal() { return true; }
+
     public String execute(JsonObject args) {
         String prompt = args.get("prompt").getAsString();
         log.info("Tool: generate_image, prompt={}", prompt);

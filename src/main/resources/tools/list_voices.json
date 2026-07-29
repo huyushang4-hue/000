@@ -1,0 +1,11 @@
+{
+  "name": "list_voices",
+  "description": "列出所有可用的TTS语音音色",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  },
+  "class": "ykd.demo.tool.impl.ListVoicesTool",
+  "terminal": false
+}

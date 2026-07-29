@@ -25,7 +25,7 @@ public class ScheduleTaskTool implements Tool {
     private final TaskSchedulerService taskService;
     private final UserRepository userRepository;
 
-    @Override
+
     public FunctionDefinition getDefinition() {
         return func("schedule_task", """
             创建定时任务/提醒/闹钟。当用户要求"X分钟后提醒我"、"明天早上通知我"、"每天8点发消息"等，
@@ -46,7 +46,10 @@ public class ScheduleTaskTool implements Tool {
             """);
     }
 
-    @Override
+
+
+    public boolean isTerminal() { return true; }
+
     public String execute(JsonObject args) {
         try {
             String taskType = args.get("taskType").getAsString();

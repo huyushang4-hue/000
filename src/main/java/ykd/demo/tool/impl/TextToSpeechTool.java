@@ -37,6 +37,9 @@ public class TextToSpeechTool implements Tool {
     }
 
     @Override
+    public boolean isTerminal() { return true; }
+
+    @Override
     public String execute(JsonObject args) {
         String text = args.get("text").getAsString();
         log.info("Tool: text_to_speech, text={}", text);

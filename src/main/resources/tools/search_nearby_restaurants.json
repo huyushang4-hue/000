@@ -1,0 +1,20 @@
+{
+  "name": "search_nearby_restaurants",
+  "description": "搜索指定城市附近的美食餐厅",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "city": {
+        "type": "string",
+        "description": "城市名"
+      },
+      "keywords": {
+        "type": "string",
+        "description": "搜索关键词如火锅、烧烤"
+      }
+    },
+    "required": []
+  },
+  "class": "ykd.demo.tool.impl.NearbyRestaurantTool",
+  "terminal": false
+}
