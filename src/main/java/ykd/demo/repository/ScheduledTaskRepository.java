@@ -14,6 +14,4 @@ public interface ScheduledTaskRepository extends JpaRepository<ScheduledTask, Lo
     /** 查询所有待执行的周期任务 */
     List<ScheduledTask> findByTypeAndStatus(ScheduledTask.TaskType type, ScheduledTask.TaskStatus status);
 
-    /** 按用户查询 */
-    List<ScheduledTask> findByUserIdOrderByCreatedAtDesc(Long userId);
 }

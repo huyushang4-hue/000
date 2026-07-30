@@ -206,7 +206,6 @@ public class AiSdkChatServiceImpl implements AiChatService {
         /** 工具结果缓存：key=签名，value=执行结果，用于去重时直接返回缓存 */
         Map<String, String> resultCache = new HashMap<>();
         int totalCalls = 0;
-        boolean taskCreated = false;  // 防止重复创建任务
 
         try {
             for (int round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -239,11 +238,6 @@ public class AiSdkChatServiceImpl implements AiChatService {
                         if (++totalCalls > MAX_TOTAL_CALLS) {
                             log.warn("已达工具调用上限 {}", MAX_TOTAL_CALLS);
                             break;
-                        }
-                        // 已有任务创建，跳过重复并终止
-                        if ("schedule_task".equals(tcf.getFunction().getName())) {
-                            if (taskCreated) { skippedCount++; continue; }
-                            taskCreated = true;
                         }
                         validCalls.add(tcf);
                     }
@@ -303,7 +297,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
                     }
                 }
             }
-            if (reply.isBlank()) reply = taskCreated ? "好的，已帮你创建定时提醒！" : "AI处理超时，请简化问题重新尝试";
+            if (reply.isBlank()) reply = "AI处理超时，请简化问题重新尝试";
             addAssistantMsg(reply);
             recordUsage(result);
             trimContext();

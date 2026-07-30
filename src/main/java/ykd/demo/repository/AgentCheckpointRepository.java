@@ -9,6 +9,4 @@ public interface AgentCheckpointRepository extends JpaRepository<AgentCheckpoint
     /** 按 sessionId 查找最近的检查点 */
     Optional<AgentCheckpoint> findTopBySessionIdOrderByCreatedAtDesc(String sessionId);
 
-    /** 按 taskId 查找 */
-    Optional<AgentCheckpoint> findByTaskId(Long taskId);
 }

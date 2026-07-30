@@ -35,9 +35,10 @@ public class ILinkBotService {
 
     // 多机器人池子：key=自定义机器人唯一标识（如 botKey / wxid）
     private final ConcurrentHashMap<String, BotInstance> botPool = new ConcurrentHashMap<>();
-    /** 新 bot 自动编号 */
+    /** 新 bot 自动编号保证编号不会乱 */
     private final AtomicInteger botCounter = new AtomicInteger(0);
 
+    /**引入一个可以定时的线程池*/
     private final ScheduledExecutorService debouncer = Executors.newScheduledThreadPool(
             Runtime.getRuntime().availableProcessors() * 2, r -> {
         Thread t = new Thread(r, "debounce");
@@ -293,6 +294,7 @@ public class ILinkBotService {
 
     // ==================== 消息处理 ====================
 
+    //一条一条处理消息
     private void handleMessages(BotInstance bot, List<WeixinMessage> messages) {
         for (WeixinMessage msg : messages) {
             try { handleSingleMessage(bot, msg); }
@@ -446,6 +448,7 @@ public class ILinkBotService {
             String userMsgSummary = entries.stream()
                     .map(e -> e.getOrDefault("text", "[图片/媒体]").toString())
                     .collect(Collectors.joining("\n---\n"));
+            //存入数据库
             conversationService.saveIfNotExists(user.getId(), null,
                     Conversation.MessageRole.USER, userMsgSummary, Conversation.MessageType.TEXT);
 
@@ -454,6 +457,7 @@ public class ILinkBotService {
             if (reply != null && !reply.isBlank()) {
                 cl.sendText(fromUserId, reply);
                 log.info("[{}] 回复 [{}]: {}", bot.botKey, fromUserId, reply);
+                //存入数据库
                 conversationService.saveIfNotExists(user.getId(), null,
                         Conversation.MessageRole.ASSISTANT, reply, Conversation.MessageType.TEXT);
             } else if (reply != null && reply.isBlank()) {

@@ -48,7 +48,7 @@ public class ScheduleTaskTool implements Tool {
 
 
 
-    public boolean isTerminal() { return true; }
+    public boolean isTerminal() { return false; }
 
     public String execute(JsonObject args) {
         try {
