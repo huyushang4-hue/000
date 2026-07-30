@@ -17,6 +17,7 @@ import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import ykd.demo.service.AiChatService;
+import ykd.demo.service.RagService;
 import ykd.demo.service.ConversationService;
 import ykd.demo.service.CheckpointService;
 import ykd.demo.entity.Conversation;
@@ -46,6 +47,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
     private final UserRepository userRepository;
     /** 检查点服务：Agent Loop 进度保存 */
     private final CheckpointService checkpointService;
+    private final RagService ragService;
 
     private final String apiKey = System.getenv("DASHSCOPE_API_KEY");
     /** Jackson 序列化器：处理 Token 用量、摘要接口返回 JSON */
@@ -82,7 +84,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
      *  批量转换工具定义 Tool.getDefinition() → SDK ToolFunction 存入 toolDefs */
     public AiSdkChatServiceImpl(List<Tool> tools, PendingMediaQueue mediaQueue,
                                 ConversationService conversationService, UserRepository userRepository,
-                                CheckpointService checkpointService) {
+                                CheckpointService checkpointService, RagService ragService) {
         this.tools = tools;
         this.deepSeekClient = RestClient.builder().baseUrl("https://api.deepseek.com").build();
         this.dashScopeClient = RestClient.builder().baseUrl("https://dashscope.aliyuncs.com").build();
@@ -94,6 +96,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
         this.conversationService = conversationService;
         this.userRepository = userRepository;
         this.checkpointService = checkpointService;
+        this.ragService = ragService;
     }
 
     // ==================== 文字聊天 ====================
@@ -134,8 +137,9 @@ public class AiSdkChatServiceImpl implements AiChatService {
             for (Conversation conv : reversed) {
                 String role = conv.getRole() == Conversation.MessageRole.USER
                         ? Role.USER.getValue() : Role.ASSISTANT.getValue();
+                String prefix = "[历史记录 " + conv.getCreatedAt().format(DateTimeFormatter.ofPattern("MM-dd HH:mm")) + "] ";
                 getMessages().add(MultiModalMessage.builder()
-                        .role(role).content(singletonText(conv.getContent())).build());
+                        .role(role).content(singletonText(prefix + conv.getContent())).build());
             }
             log.info("已加载用户 {} 的 {} 条历史对话作为上下文", fromUserId, history.size());
         });
@@ -170,11 +174,25 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
         // 首次访问该用户时，从 DB 加载最近 20 条历史对话作为上下文
         String uid = currentUser.get();
-        if (getMessages().isEmpty() && uid != null) {
+        if (getMessages().size() <= 1 && uid != null) {
             loadHistoryIntoContext(uid);
         }
 
         log.info("防抖批次 {} 条 (用户: {})", entries.size(), uid);
+        String lastUserMsg = null;
+
+        // RAG: 首次对话时检索历史相关上下文
+        if (getMessages().size() <= 21 && uid != null) {
+            String firstText = (String) entries.get(0).getOrDefault("text", "");
+            if (!firstText.isBlank()) {
+                String ragCtx = ragService.searchContext(uid, firstText, 3);
+                if (ragCtx != null && !ragCtx.isBlank()) {
+                    getMessages().add(MultiModalMessage.builder()
+                            .role(Role.SYSTEM.getValue()).content(singletonText(ragCtx)).build());
+                }
+            }
+        }
+
         for (Map<String, Object> e : entries) {
             String type = (String) e.getOrDefault("type", "TEXT");
             String text = (String) e.getOrDefault("text", "");
