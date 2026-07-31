@@ -17,6 +17,7 @@ import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import ykd.demo.service.AiChatService;
+import ykd.demo.skill.SkillManager;
 import ykd.demo.service.RagService;
 import ykd.demo.service.ConversationService;
 import ykd.demo.service.CheckpointService;
@@ -48,13 +49,12 @@ public class AiSdkChatServiceImpl implements AiChatService {
     /** 检查点服务：Agent Loop 进度保存 */
     private final CheckpointService checkpointService;
     private final RagService ragService;
+    private final SkillManager skillManager;
 
     private final String apiKey = System.getenv("DASHSCOPE_API_KEY");
     /** Jackson 序列化器：处理 Token 用量、摘要接口返回 JSON */
     private final ObjectMapper mapper = new ObjectMapper();
 
-    /** 固定地址 https://api.deepseek.com，用于超长对话压缩摘要 */
-    private final RestClient deepSeekClient;
     /** 调用 DashScope 兼容 OpenAI 接口做 ASR 语音识别 */
     private final RestClient dashScopeClient;
 
@@ -67,10 +67,6 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
     /** 最后一次 Token 消耗信息，用于日志监控 */
     private String lastUsage = "";
-    /** trimContext 前的上下文轮数阈值 */
-    private static final int MAX_ROUNDS = 50;
-    /** 压缩后保留最近 10 轮原始对话 */
-    private static final int KEEP_ROUNDS = 10;
     /** 单次提问最多工具迭代轮次（模型思考→调工具→再回答循环） */
     private static final int MAX_TOOL_ROUNDS = 10;
     /** 单次请求全局工具最大调用次数，防止死循环 */
@@ -84,9 +80,8 @@ public class AiSdkChatServiceImpl implements AiChatService {
      *  批量转换工具定义 Tool.getDefinition() → SDK ToolFunction 存入 toolDefs */
     public AiSdkChatServiceImpl(List<Tool> tools, PendingMediaQueue mediaQueue,
                                 ConversationService conversationService, UserRepository userRepository,
-                                CheckpointService checkpointService, RagService ragService) {
+                                CheckpointService checkpointService, RagService ragService, SkillManager skillManager) {
         this.tools = tools;
-        this.deepSeekClient = RestClient.builder().baseUrl("https://api.deepseek.com").build();
         this.dashScopeClient = RestClient.builder().baseUrl("https://dashscope.aliyuncs.com").build();
         this.toolDefs = tools.stream()
                 .map(Tool::getDefinition)
@@ -97,6 +92,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
         this.userRepository = userRepository;
         this.checkpointService = checkpointService;
         this.ragService = ragService;
+        this.skillManager = skillManager;
     }
 
     // ==================== 文字聊天 ====================
@@ -318,7 +314,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
             if (reply.isBlank()) reply = "AI处理超时，请简化问题重新尝试";
             addAssistantMsg(reply);
             recordUsage(result);
-            trimContext();
+
             return reply;
 
         } catch (ApiException | NoApiKeyException | UploadFileException e) {
@@ -482,55 +478,5 @@ public class AiSdkChatServiceImpl implements AiChatService {
                         "round=" + round + ", calls=" + totalCalls)
             );
         } catch (Exception ignored) {}
-    }
-
-    /** trimContext：计算实际对话轮数 */
-
-    private void trimContext() {
-        List<MultiModalMessage> msgs = getMessages();
-        int rounds = (msgs.size() - 1) / 2;
-        if (rounds <= MAX_ROUNDS) return;
-
-        log.info("压缩 {} 轮对话...", rounds);
-        int keepStart = msgs.size() - KEEP_ROUNDS * 2;
-
-        String summary = summarize(msgs.subList(1, keepStart));
-        if (summary == null || summary.isBlank()) return;
-
-        List<MultiModalMessage> kept = new ArrayList<>(msgs.subList(keepStart, msgs.size()));
-        msgs.clear();
-        msgs.add(MultiModalMessage.builder()
-                .role(Role.SYSTEM.getValue())
-                .content(singletonText("【历史摘要】" + summary)).build());
-        msgs.addAll(kept);
-    }
-
-    /** DeepSeek 摘要方法：拼接老旧对话 → 手动 JSON 转义（防反斜杠/双引号破坏 JSON）→ 调 DeepSeek 接口 → 返回摘要文本 */
-    private String summarize(List<MultiModalMessage> history) {
-        StringBuilder sb = new StringBuilder("请总结以下对话，覆盖各话题要点，保留关键细节，300-500字中文：\n");
-        for (MultiModalMessage msg : history) {
-            List<Map<String, Object>> c = msg.getContent();
-            if (c == null || c.isEmpty()) continue;
-            Object t = c.get(0).get("text");
-            if (t == null) continue;
-            sb.append("user".equals(msg.getRole()) ? "用户" : "AI")
-              .append(": ").append(t.toString()).append("\n");
-        }
-        // 手动 JSON 转义：反斜杠 → \\，双引号 → \"，换行 → \n，防止 JSON 格式崩溃
-        String body = """
-                {"model":"deepseek-v4-flash","messages":[{"role":"user","content":"%s"}]}
-                """.formatted(sb.toString().replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n"));
-        try {
-            String json = deepSeekClient.post().uri("/chat/completions")
-                    .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + System.getenv("DEEPSEEK_API_KEY"))
-                    .body(body).retrieve().body(String.class);
-            JsonNode choices = mapper.readTree(json).path("choices");
-            return choices.isArray() && choices.size() > 0
-                    ? choices.get(0).path("message").path("content").asText().trim() : "";
-        } catch (Exception e) {
-            log.error("总结失败", e);
-            return null;
-        }
     }
 }

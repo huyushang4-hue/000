@@ -45,7 +45,7 @@ public class RagService {
         if (keywords.isEmpty()) return "";
 
         // 用第一个关键词搜索历史对话
-        String keyword = keywords.get(0);  // MATCH AGAINST 不需要 % 通配符
+        String keyword = String.join(" ", keywords);  // MATCH AGAINST 不需要 % 通配符
         List<Conversation> results = conversationRepo
                 .searchByKeyword(userId, "USER", keyword);
 
