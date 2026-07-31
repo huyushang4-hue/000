@@ -88,6 +88,13 @@
 			<artifactId>poi-ooxml</artifactId>
 			<version>5.4.0</version>
 		</dependency>
+
+		<!-- B站收藏夹 SDK（java-fav）依赖：SQLite 存储收藏夹视频数据 -->
+		<dependency>
+			<groupId>org.xerial</groupId>
+			<artifactId>sqlite-jdbc</artifactId>
+			<version>3.45.2.0</version>
+		</dependency>
 	</dependencies>
 
 	<build>

@@ -41,7 +41,12 @@ public class AiSdkChatServiceImpl implements AiChatService {
     /** 多用户会话上下文：key = fromUserId（微信ID），value = 该用户的完整 message 链 */
     private final ConcurrentHashMap<String, List<MultiModalMessage>> userContexts = new ConcurrentHashMap<>();
     /** 当前处理线程的用户 ID，ThreadLocal 避免跨线程污染 */
-    private final ThreadLocal<String> currentUser = new ThreadLocal<>();
+    private static final ThreadLocal<String> currentUser = new ThreadLocal<>();
+
+    /** 获取当前线程的用户 openId（供 Tool 实现类调用） */
+    public static String getCurrentToolUser() {
+        return currentUser.get();
+    }
     /** 对话记录服务：加载历史对话构建初始上下文 */
     private final ConversationService conversationService;
     /** 用户仓库：根据 fromUserId 查找数据库用户 */
@@ -378,9 +383,10 @@ public class AiSdkChatServiceImpl implements AiChatService {
         try { Thread.sleep(ms); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
     }
 
-    /** 判断是否为可重试的瞬时错误（网络/超时/服务端临时故障） */
+    /** 判断是否为可重试的瞬时错误（网络/超时/服务端临时故障）
+     *  只对"错误：xxx"前缀的工具返回做判定，避免误伤正常内容（如字幕全文含"网络"字样） */
     private boolean isTransientError(String result) {
-        if (result == null) return false;
+        if (result == null || !result.startsWith("错误：")) return false;
         return result.contains("网络") || result.contains("超时") || result.contains("稍后重试")
                 || result.contains("timeout") || result.contains("connection")
                 || result.contains("refused") || result.contains("reset");
