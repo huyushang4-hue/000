@@ -10,6 +10,5 @@ public record SkillMeta(
     String name,
     String description,
     String parameters,
-    String className,
-    boolean terminal
+    String className
 ) {}

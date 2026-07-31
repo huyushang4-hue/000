@@ -14,5 +14,4 @@
     ]
   },
   "class": "ykd.demo.tool.impl.CalculatorTool",
-  "terminal": false
 }

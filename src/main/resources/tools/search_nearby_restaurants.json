@@ -16,5 +16,4 @@
     "required": []
   },
   "class": "ykd.demo.tool.impl.NearbyRestaurantTool",
-  "terminal": false
 }

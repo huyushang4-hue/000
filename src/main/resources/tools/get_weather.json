@@ -9,5 +9,4 @@
     "required": ["city"]
   },
   "class": "ykd.demo.tool.impl.GetWeatherTool",
-  "terminal": false
 }

@@ -19,5 +19,4 @@
     ]
   },
   "class": "ykd.demo.tool.impl.TranslatorTool",
-  "terminal": false
 }

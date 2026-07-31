@@ -74,8 +74,7 @@ public class SkillManager {
                 json.get("name").getAsString(),
                 json.get("description").getAsString(),
                 json.get("parameters").toString(),
-                json.get("class").getAsString(),
-                json.has("terminal") && json.get("terminal").getAsBoolean()
+                json.get("class").getAsString()
         );
     }
 
@@ -162,23 +161,4 @@ public class SkillManager {
         return skills.get(name);
     }
 
-        /** 手动注册一个 Tool（适用于需要 Spring DI 的工具，不走 JSON 反射） */
-    public void registerTool(Tool tool) {
-        String name = tool.getDefinition().getName();
-        tools.add(tool);
-        toolByName.put(name, tool);
-        toolDefs.add((ToolBase) ToolFunction.builder().function(tool.getDefinition()).build());
-        log.info("Tool 手动注册: {}", name);
-    }
-
-    // ==================== Tool 查询接口 ====================
-
-    public Collection<Skill> getSkills() { return skills.values(); }
-    public List<Tool> getTools() { return tools; }
-    public List<ToolBase> getToolDefs() { return toolDefs; }
-    public Tool getTool(String name) { return toolByName.get(name); }
-    public boolean isTerminal(String toolName) {
-        Tool t = toolByName.get(toolName);
-        return t != null && t.isTerminal();
-    }
 }

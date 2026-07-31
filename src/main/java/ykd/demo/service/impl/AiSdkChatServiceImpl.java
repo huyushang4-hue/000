@@ -116,7 +116,9 @@ public class AiSdkChatServiceImpl implements AiChatService {
                         1. 先调 get_datetime 获取当前时间
                         2. 立即调 schedule_task 创建任务（只调一次）
                         3. 创建成功后回复"好的，已帮你创建定时提醒！"
-                        其他场景正常使用对应工具即可。"""))
+                        其他场景正常使用对应工具即可。\n"""
+                        + skillManager.getSkillDirectory() + """
+                        注意：对话开头是从数据库恢复的历史记录，请基于这些记录回答用户。"""))
                     .build());
             return list;
         });
@@ -179,9 +181,12 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
         // RAG: 首次对话时检索历史相关上下文
         if (getMessages().size() <= 21 && uid != null) {
-            String firstText = (String) entries.get(0).getOrDefault("text", "");
-            if (!firstText.isBlank()) {
-                String ragCtx = ragService.searchContext(uid, firstText, 3);
+            String allText = entries.stream()
+                    .map(e -> (String) e.getOrDefault("text", ""))
+                    .filter(t -> !t.isBlank())
+                    .collect(java.util.stream.Collectors.joining(" "));
+            if (!allText.isBlank()) {
+                String ragCtx = ragService.searchContext(uid, allText, 8);
                 if (ragCtx != null && !ragCtx.isBlank()) {
                     getMessages().add(MultiModalMessage.builder()
                             .role(Role.SYSTEM.getValue()).content(singletonText(ragCtx)).build());
@@ -232,7 +237,6 @@ public class AiSdkChatServiceImpl implements AiChatService {
                 getMessages().add(responseMsg);
 
                 // 过滤：去重 + 次数限流 + 防止重复创建任务
-                int skippedCount = 0;
                 List<ToolCallFunction> validCalls = new ArrayList<>();
                 for (ToolCallBase tc : toolCalls) {
                     if (tc instanceof ToolCallFunction tcf) {
@@ -246,7 +250,6 @@ public class AiSdkChatServiceImpl implements AiChatService {
                                         .content(singletonText(cached)).build());
                             }
                             log.info("去重但返回缓存: {}", sig);
-                            skippedCount++;
                             continue;
                         }
                         if (++totalCalls > MAX_TOTAL_CALLS) {

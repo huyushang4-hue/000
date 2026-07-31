@@ -20,5 +20,4 @@
     ]
   },
   "class": "ykd.demo.tool.impl.DateTimeTool",
-  "terminal": false
 }

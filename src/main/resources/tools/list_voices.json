@@ -7,5 +7,4 @@
     "required": []
   },
   "class": "ykd.demo.tool.impl.ListVoicesTool",
-  "terminal": false
 }
