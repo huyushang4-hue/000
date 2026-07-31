@@ -8,5 +8,5 @@
     },
     "required": ["city"]
   },
-  "class": "ykd.demo.tool.impl.GetWeatherTool",
+  "class": "ykd.demo.tool.impl.GetWeatherTool"
 }

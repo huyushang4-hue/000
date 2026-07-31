@@ -19,5 +19,5 @@
       "query"
     ]
   },
-  "class": "ykd.demo.tool.impl.DateTimeTool",
+  "class": "ykd.demo.tool.impl.DateTimeTool"
 }

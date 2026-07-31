@@ -13,5 +13,5 @@
       "query"
     ]
   },
-  "class": "ykd.demo.tool.impl.GetRealtimeInfoTool",
+  "class": "ykd.demo.tool.impl.GetRealtimeInfoTool"
 }

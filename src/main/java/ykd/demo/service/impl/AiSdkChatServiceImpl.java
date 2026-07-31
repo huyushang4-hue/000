@@ -115,7 +115,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
                         你是智能助手。当且仅当用户要求定时提醒/通知/闹钟时：
                         1. 先调 get_datetime 获取当前时间
                         2. 立即调 schedule_task 创建任务（只调一次）
-                        3. 创建成功后回复"好的，已帮你创建定时提醒！"
+                        3. 创建成功后直接回复"好的，已帮你创建定时提醒！"，不要立即查询/搜索/播报内容
                         其他场景正常使用对应工具即可。\n"""
                         + skillManager.getSkillDirectory() + """
                         注意：对话开头是从数据库恢复的历史记录，请基于这些记录回答用户。"""))
@@ -334,6 +334,11 @@ public class AiSdkChatServiceImpl implements AiChatService {
     }
 
     /** 工具分发器：解析参数 → 自动注入当前用户 openId → 执行业务逻辑 */
+    private static final int TOOL_RETRY = 2;
+    /** 非幂等工具：重试会造成重复副作用（重复建任务/删任务），禁止重试 */
+    private static final java.util.Set<String> NO_RETRY_TOOLS =
+            java.util.Set.of("schedule_task", "delete_task", "create_task");
+
     private String executeTool(String name, String arguments) {
         JsonObject args = JsonParser.parseString(arguments).getAsJsonObject();
         // 自动注入当前用户 ID
@@ -343,11 +348,42 @@ public class AiSdkChatServiceImpl implements AiChatService {
         for (Tool tool : tools) {
             if (tool.getDefinition().getName().equals(name)) {
                 log.info("Tool: {} -> {}", name, arguments);
-                return tool.execute(args);
+                String result = null;
+                for (int attempt = 1; attempt <= TOOL_RETRY; attempt++) {
+                    try {
+                        result = tool.execute(args);
+                        if (attempt < TOOL_RETRY && !NO_RETRY_TOOLS.contains(name) && isTransientError(result)) {
+                            log.warn("Tool {} 瞬时错误(第{}/{}): {}", name, attempt, TOOL_RETRY, result);
+                            sleepQuietly(1500L * attempt);
+                            continue;
+                        }
+                        return result;
+                    } catch (Exception e) {
+                        log.warn("Tool {} 异常(第{}/{}): {}", name, attempt, TOOL_RETRY, e.getMessage());
+                        if (attempt < TOOL_RETRY && !NO_RETRY_TOOLS.contains(name)) {
+                            sleepQuietly(1500L * attempt);
+                        } else {
+                            return "错误：" + e.getMessage();
+                        }
+                    }
+                }
+                return result == null ? "错误：工具执行失败" : result;
             }
         }
         log.warn("未知工具: {}", name);
         return "未知工具：" + name;
+    }
+
+    private void sleepQuietly(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+    }
+
+    /** 判断是否为可重试的瞬时错误（网络/超时/服务端临时故障） */
+    private boolean isTransientError(String result) {
+        if (result == null) return false;
+        return result.contains("网络") || result.contains("超时") || result.contains("稍后重试")
+                || result.contains("timeout") || result.contains("connection")
+                || result.contains("refused") || result.contains("reset");
     }
 
 

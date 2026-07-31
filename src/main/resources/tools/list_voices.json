@@ -6,5 +6,5 @@
     "properties": {},
     "required": []
   },
-  "class": "ykd.demo.tool.impl.ListVoicesTool",
+  "class": "ykd.demo.tool.impl.ListVoicesTool"
 }

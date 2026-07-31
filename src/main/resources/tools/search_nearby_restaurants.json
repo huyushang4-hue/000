@@ -15,5 +15,5 @@
     },
     "required": []
   },
-  "class": "ykd.demo.tool.impl.NearbyRestaurantTool",
+  "class": "ykd.demo.tool.impl.NearbyRestaurantTool"
 }

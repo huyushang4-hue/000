@@ -20,6 +20,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+import ykd.demo.service.TaskSchedulerService;
 
 @Slf4j
 @Service
@@ -324,6 +325,13 @@ public class ILinkBotService {
 
         cl.sendText(fromUserId, "正在思考……");
 
+        // 4. 人工介入：检测是否有暂停任务等待此用户的确认
+        String resumeResult = handlePausedTaskIfAny(cl, fromUserId, text);
+        if (resumeResult != null) {
+            cl.sendText(fromUserId, resumeResult);
+            return;
+        }
+
         if (imageItem != null) {
             log.info("[{}] 收到图片消息 [{}]", bot.botKey, fromUserId);
             byte[] imageBytes = cl.downloadImageFromMessageItem(imageItem);
@@ -466,9 +474,28 @@ public class ILinkBotService {
                         Conversation.MessageRole.ASSISTANT, "已完成（媒体文件）", Conversation.MessageType.TEXT);
             }
             flushPendingImages(cl, fromUserId);
+            flushPendingPushes(cl, user.getId(), fromUserId);
         } catch (Exception e) {
             log.error("[{}] 防抖批次处理失败", bot.botKey, e);
         }
+    }
+
+    /** 4. 检查用户是否有暂停任务，有则处理确认/取消 */
+    private String handlePausedTaskIfAny(ILinkClient cl, String fromUserId, String text) {
+        if (text == null || text.isBlank()) return null;
+        // 查找该用户的暂停任务
+        var paused = ykd.demo.agent.AgentLoopRunner.PAUSED_TASKS;
+        for (var entry : paused.entrySet()) {
+            var runner = entry.getValue();
+            if (runner.getState() != ykd.demo.agent.AgentState.PAUSED) continue;
+            // 简单匹配：消息含"确认""继续""取消"等关键词
+            String t = text.toLowerCase();
+            if (t.contains("确认") || t.contains("继续") || t.contains("好的") ||
+                    t.contains("取消") || t.contains("不要") || t.contains("放弃")) {
+                return runner.resume(text);
+            }
+        }
+        return null;
     }
 
     private void flushPendingImages(ILinkClient cl, String toUserId) {
@@ -496,6 +523,16 @@ public class ILinkBotService {
                     }
                 }
             }
+        }
+    }
+
+    private void flushPendingPushes(ILinkClient cl, Long userId, String openId) {
+        java.util.List<String> pending = TaskSchedulerService.PENDING_PUSHES.remove(userId);
+        if (pending == null || pending.isEmpty()) return;
+        log.info("定时任务积压推送 {} 条: [{}]", pending.size(), openId);
+        for (String msg : pending) {
+            try { cl.sendText(openId, "📬 " + msg); }
+            catch (Exception e) { log.warn("积压推送仍失败: {}", e.getMessage()); }
         }
     }
 }

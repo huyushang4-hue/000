@@ -18,5 +18,5 @@
       "target_language"
     ]
   },
-  "class": "ykd.demo.tool.impl.TranslatorTool",
+  "class": "ykd.demo.tool.impl.TranslatorTool"
 }

@@ -5,7 +5,9 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import ykd.demo.service.AiChatService;
+import ykd.demo.agent.AgentLoopRunner;
 import ykd.demo.service.ILinkBotService;
+import ykd.demo.service.CheckpointService;
 import ykd.demo.entity.ScheduledTask;
 import ykd.demo.entity.User;
 import ykd.demo.repository.ScheduledTaskRepository;
@@ -23,14 +25,21 @@ public class TaskSchedulerService {
     private final ILinkBotService ilinkBotService;
     private final UserRepository userRepository;
 
+    public static final java.util.concurrent.ConcurrentHashMap<Long, java.util.List<String>> PENDING_PUSHES 
+            = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private final CheckpointService checkpointService;
+
     public TaskSchedulerService(ScheduledTaskRepository taskRepository,
                                 @Lazy AiChatService aiChatService,
                                 @Lazy ILinkBotService ilinkBotService,
-                                @Lazy UserRepository userRepository) {
+                                @Lazy UserRepository userRepository,
+                                @Lazy CheckpointService checkpointService) {
         this.taskRepository = taskRepository;
         this.aiChatService = aiChatService;
         this.ilinkBotService = ilinkBotService;
         this.userRepository = userRepository;
+        this.checkpointService = checkpointService;
     }
 
     /** 每 10 秒扫描一次，执行到期的一次性任务 */
@@ -142,7 +151,7 @@ public class TaskSchedulerService {
                 }
                 prompt.append("\n完成后直接回复用户，不要创建新的定时任务。");
 
-                String reply = aiChatService.chatWithTools(prompt.toString());
+                String reply = new AgentLoopRunner("task-" + task.getId(), task.getId(), task.getUserId(), aiChatService, checkpointService).run(prompt.toString());
 
                 if (reply == null || reply.isBlank() || reply.contains("AI处理超时")) {
                     throw new RuntimeException("Agent Loop 返回空或超时: " + reply);
@@ -205,7 +214,8 @@ public class TaskSchedulerService {
                                 client.sendImage(openId, data, fn, "");
                         }
                     } catch (Exception e) {
-                        log.error("发送任务回复失败 [{}]", botKey, e);
+                        log.warn("推送失败入队列: [{}] {}", botKey, e.getMessage());
+                        PENDING_PUSHES.computeIfAbsent(userId, k -> new java.util.ArrayList<>()).add(reply);
                     }
                 });
             });
