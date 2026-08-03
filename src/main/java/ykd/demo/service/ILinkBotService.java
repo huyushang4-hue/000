@@ -31,6 +31,7 @@ public class ILinkBotService {
     private final ResumeContextManager resumeManager;
     private final UserService userService;
     private final ConversationService conversationService;
+    private final ykd.demo.task.TaskOrchestratorService taskOrchestratorService;
     private final ILinkConfig config;
     private static final long DEBOUNCE_MS = 8_000;
 
@@ -89,12 +90,14 @@ public class ILinkBotService {
 
     public ILinkBotService(AiChatService aiChatService, AttachmentStore attachmentStore,
                            ResumeContextManager resumeManager, UserService userService,
-                           ConversationService conversationService) {
+                           ConversationService conversationService,
+                           @org.springframework.context.annotation.Lazy ykd.demo.task.TaskOrchestratorService taskOrchestratorService) {
         this.aiChatService = aiChatService;
         this.attachmentStore = attachmentStore;
         this.resumeManager = resumeManager;
         this.userService = userService;
         this.conversationService = conversationService;
+        this.taskOrchestratorService = taskOrchestratorService;
         this.config = ILinkConfig.builder()
                 .heartbeatEnabled(true).heartbeatIntervalMs(5000L).build();
     }
@@ -412,6 +415,24 @@ public class ILinkBotService {
 
         if (text == null || text.isBlank()) return;
         log.info("[{}] 收到文字消息 [{}]: {}", bot.botKey, fromUserId, text);
+
+        // 澄清模式：用户在回答 AI 的追问 → 绕过防抖立即处理
+        if (taskOrchestratorService.isAwaitingClarification(fromUserId)) {
+            String reply = taskOrchestratorService.continueClarification(fromUserId, text);
+            if (reply != null) {
+                cl.sendText(fromUserId, reply);
+                log.info("[{}] 澄清回复 [{}]: {}", bot.botKey, fromUserId, reply);
+                ykd.demo.entity.User u = userService.findOrCreate(fromUserId, null, null);
+                conversationService.saveIfNotExists(u.getId(), null,
+                        Conversation.MessageRole.USER, text, Conversation.MessageType.TEXT);
+                conversationService.saveIfNotExists(u.getId(), null,
+                        Conversation.MessageRole.ASSISTANT, reply, Conversation.MessageType.TEXT);
+                // 如果澄清后产生了多步骤计划，继续执行
+                scheduleNextStepsIfNeeded(bot, fromUserId);
+            }
+            return;
+        }
+
         synchronized (bot.pending) {
             bot.pending.add(DebounceEntry.text(fromUserId, text));
             resetDebounce(bot);
@@ -462,6 +483,14 @@ public class ILinkBotService {
 
             // 核心 AI 调用
             String reply = aiChatService.processDebounced(fromUserId, entries);
+
+            // 检查是否被 ask_user / create_plan 中断（编排器接管）
+            ykd.demo.task.InterruptSignal signal = ykd.demo.task.InterruptSignal.get();
+            if (signal != null) {
+                reply = taskOrchestratorService.handleSignal(fromUserId, signal, reply);
+                ykd.demo.task.InterruptSignal.clear();
+            }
+
             if (reply != null && !reply.isBlank()) {
                 cl.sendText(fromUserId, reply);
                 log.info("[{}] 回复 [{}]: {}", bot.botKey, fromUserId, reply);
@@ -481,8 +510,7 @@ public class ILinkBotService {
     }
 
     /** 4. 检查用户是否有暂停任务，有则处理确认/取消 */
-    private String handlePausedTaskIfAny(ILinkClient cl, String fromUserId, String text) {
-        if (text == null || text.isBlank()) return null;
+    private String handlePausedTaskIfAny(ILinkClient cl, String fromUserId, String text) {        if (text == null || text.isBlank()) return null;
         // 查找该用户的暂停任务
         var paused = ykd.demo.agent.AgentLoopRunner.PAUSED_TASKS;
         for (var entry : paused.entrySet()) {
@@ -534,5 +562,31 @@ public class ILinkBotService {
             try { cl.sendText(openId, "📬 " + msg); }
             catch (Exception e) { log.warn("积压推送仍失败: {}", e.getMessage()); }
         }
+    }
+
+    /** 如果用户有未完成的多步骤任务，在 debouncer 上异步执行下一步 */
+    private void scheduleNextStepsIfNeeded(BotInstance bot, String fromUserId) {
+        if (!taskOrchestratorService.hasMoreSteps(fromUserId)) return;
+        debouncer.schedule(() -> executePendingStep(bot, fromUserId), 1500, TimeUnit.MILLISECONDS);
+    }
+
+    /** 执行多步骤任务的下一步，发完后再检查是否还有更多步骤 */
+    private void executePendingStep(BotInstance bot, String fromUserId) {
+        String reply = taskOrchestratorService.executeNextStep(fromUserId);
+        if (reply == null) return;
+        ILinkClient cl = bot.client;
+        if (cl == null) return;
+        try {
+            cl.sendText(fromUserId, reply);
+            log.info("[{}] 步骤回复 [{}]: {}", bot.botKey, fromUserId, reply);
+            ykd.demo.entity.User u = userService.findOrCreate(fromUserId, null, null);
+            conversationService.saveIfNotExists(u.getId(), null,
+                    Conversation.MessageRole.ASSISTANT, reply, Conversation.MessageType.TEXT);
+            flushPendingImages(cl, fromUserId);
+        } catch (Exception e) {
+            log.error("[{}] 步骤回复失败", bot.botKey, e);
+        }
+        // 递归调度下一步
+        scheduleNextStepsIfNeeded(bot, fromUserId);
     }
 }

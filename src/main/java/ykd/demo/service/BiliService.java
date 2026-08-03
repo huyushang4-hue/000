@@ -210,6 +210,15 @@ public class BiliService {
      * 下载 B 站视频的音频流
      * @return 音频字节数组（m4a 格式），失败返回 null
      */
+    /**
+     * 删除收藏夹
+     */
+    public boolean deleteFavFolder(String openId, long favId) throws Exception {
+        FavService favService = getFavService(openId);
+        if (favService == null) throw new RuntimeException("未登录B站");
+        return favService.deleteFolder(favId);
+    }
+
     public byte[] downloadAudio(String openId, String bvId) {
         String cookie = cookieCache.get(openId);
         if (cookie == null) return null;

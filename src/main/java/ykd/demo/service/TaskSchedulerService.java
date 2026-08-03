@@ -30,6 +30,18 @@ public class TaskSchedulerService {
 
     private final CheckpointService checkpointService;
 
+    /** 一次性任务精准定时器：任务创建时排期，到点立即触发（不用等 10 秒轮询） */
+    private final java.util.concurrent.ScheduledExecutorService onceScheduler =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "once-task-timer");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /** 已在定时器中排期的 ONCE 任务 ID，防止重复排期 */
+    private final java.util.Set<Long> scheduledOnceIds =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     public TaskSchedulerService(ScheduledTaskRepository taskRepository,
                                 @Lazy AiChatService aiChatService,
                                 @Lazy ILinkBotService ilinkBotService,
@@ -42,7 +54,55 @@ public class TaskSchedulerService {
         this.checkpointService = checkpointService;
     }
 
-    /** 每 10 秒扫描一次，执行到期的一次性任务 */
+    /** 启动时恢复：为数据库中所有未执行的一次性任务重新排定时器（重启不丢任务）
+     *  不管是否到期统一排期：未到期的等到点触发，已到期的立即执行 */
+    @jakarta.annotation.PostConstruct
+    public void restorePendingOnceTasks() {
+        // ① 回收卡死在 RUNNING 的一次性任务（上次执行中崩溃），重置为 PENDING 再排期
+        List<ScheduledTask> stuck = taskRepository.findByTypeAndStatus(
+                ScheduledTask.TaskType.ONCE,
+                ScheduledTask.TaskStatus.RUNNING);
+        for (ScheduledTask task : stuck) {
+            task.setStatus(ScheduledTask.TaskStatus.PENDING);
+            taskRepository.save(task);
+            log.warn("回收卡死的一次性任务: [{}] {}, 重置为 PENDING", task.getId(), task.getTaskName());
+        }
+
+        // ② 所有 PENDING 的一次性任务重新排期
+        List<ScheduledTask> pending = taskRepository.findByTypeAndStatus(
+                ScheduledTask.TaskType.ONCE,
+                ScheduledTask.TaskStatus.PENDING);
+        for (ScheduledTask task : pending) {
+            scheduleOnceTask(task);
+        }
+        if (!pending.isEmpty()) {
+            log.info("重启恢复: 已为 {} 个一次性任务重新排期", pending.size());
+        }
+    }
+
+    /** 给一次性任务排线程定时器（幂等：同一任务只排一次） */
+    private void scheduleOnceTask(ScheduledTask task) {
+        if (!scheduledOnceIds.add(task.getId())) return;  // 已排过，跳过
+        long delayMs = java.time.Duration.between(
+                LocalDateTime.now(), task.getExecuteAt()).toMillis();
+        if (delayMs < 0) delayMs = 0;  // 已到期立即执行
+
+        onceScheduler.schedule(() -> {
+            try {
+                executeTask(task);
+            } catch (Exception e) {
+                log.error("定时任务 [{}] 执行异常", task.getId(), e);
+            } finally {
+                // 执行完（无论成败）才移除防重标记，执行期间兜底扫描仍会跳过
+                scheduledOnceIds.remove(task.getId());
+            }
+        }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+
+        log.info("一次性任务已排期: [{}] {}, {} 毫秒后触发", task.getId(), task.getTaskName(), delayMs);
+    }
+
+    /** 兜底扫描：捞"漏网"的一次性任务（定时器未覆盖的，如执行中重启残留）
+     *  正常流程已由线程定时器精准触发，此方法只是双保险 */
     @Scheduled(fixedDelay = 10_000)
     public void scanOnceTasks() {
         List<ScheduledTask> tasks = taskRepository.findByTypeAndStatusAndExecuteAtBefore(
@@ -51,8 +111,10 @@ public class TaskSchedulerService {
                 LocalDateTime.now());
 
         for (ScheduledTask task : tasks) {
+            // 已由定时器排期的跳过，避免重复执行
+            if (scheduledOnceIds.contains(task.getId())) continue;
             try {
-                log.info("执行一次性任务: [{}] {}", task.getId(), task.getTaskName());
+                log.info("执行一次性任务(兜底): [{}] {}", task.getId(), task.getTaskName());
                 task.setStatus(ScheduledTask.TaskStatus.RUNNING);
                 taskRepository.save(task);
 
@@ -110,7 +172,9 @@ public class TaskSchedulerService {
         task.setUserId(userId);
         task.setExecuteAt(executeAt);
         task.setStatus(ScheduledTask.TaskStatus.PENDING);
-        return taskRepository.save(task);
+        ScheduledTask saved = taskRepository.save(task);
+        scheduleOnceTask(saved);  // 创建即排定时器，到点精准触发
+        return saved;
     }
 
     /** 添加周期任务 */
@@ -127,6 +191,12 @@ public class TaskSchedulerService {
 
     /** 执行任务：跑完整 Agent Loop（工具调用 + 自动决策），支持重试和变化检测 */
     private void executeTask(ScheduledTask task) {
+        // 占坑：先置 RUNNING 落库，防止执行期间被兜底扫描或重启恢复重复执行
+        if (task.getStatus() == ScheduledTask.TaskStatus.PENDING) {
+            task.setStatus(ScheduledTask.TaskStatus.RUNNING);
+            taskRepository.save(task);
+        }
+
         int maxRetries = 2;
         Exception lastError = null;
 

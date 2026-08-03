@@ -22,6 +22,7 @@ import ykd.demo.service.RagService;
 import ykd.demo.service.ConversationService;
 import ykd.demo.service.CheckpointService;
 import ykd.demo.entity.Conversation;
+import ykd.demo.entity.User;
 import ykd.demo.repository.UserRepository;
 import ykd.demo.tool.PendingMediaQueue;
 import ykd.demo.agent.ErrorCategory;
@@ -46,6 +47,14 @@ public class AiSdkChatServiceImpl implements AiChatService {
     /** 获取当前线程的用户 openId（供 Tool 实现类调用） */
     public static String getCurrentToolUser() {
         return currentUser.get();
+    }
+
+    /** 获取当前线程用户对应的数据库用户 ID（供 Tool 实现类调用） */
+    @Override
+    public Long getCurrentUserId() {
+        String openId = currentUser.get();
+        if (openId == null) return null;
+        return userRepository.findByOpenId(openId).map(User::getId).orElse(null);
     }
     /** 对话记录服务：加载历史对话构建初始上下文 */
     private final ConversationService conversationService;
@@ -233,6 +242,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
         try {
             for (int round = 0; round < MAX_TOOL_ROUNDS; round++) {
+                log.info("[LOOP] state=THINKING, round={}, msgs={}", round, getMessages().size());
                 result = conversation.call(param);
                 MultiModalMessage responseMsg = result.getOutput().getChoices().get(0).getMessage();
                 List<ToolCallBase> toolCalls = responseMsg.getToolCalls();
@@ -240,6 +250,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
                 // 无工具调用 = 模型直接给最终答案，跳出循环
                 if (toolCalls == null || toolCalls.isEmpty()) break;
                 getMessages().add(responseMsg);
+                log.info("[LOOP] state=TOOL_CALLING, calls={}", toolCalls.size());
 
                 // 过滤：去重 + 次数限流 + 防止重复创建任务
                 List<ToolCallFunction> validCalls = new ArrayList<>();
@@ -269,6 +280,9 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
                 // CompletableFuture 并行执行：多个不同工具同时跑，不串行排队
                 final String uid = currentUser.get();
+                final boolean[] interrupted = {false};
+                final String[] interruptType = {null};
+                final String[] interruptData = {null};
                 List<CompletableFuture<Void>> futures = validCalls.stream()
                         .map(tcf -> CompletableFuture.runAsync(() -> {
                             currentUser.set(uid);  // 恢复 ThreadLocal 到异步线程
@@ -282,6 +296,16 @@ public class AiSdkChatServiceImpl implements AiChatService {
                                             .role("tool").toolCallId(tcf.getId())
                                             .content(singletonText(toolResult)).build());
                                 }
+                                // 中断工具检测：ask_user / create_plan 调用后中断循环
+                                if ("ask_user".equals(func.getName())) {
+                                    interrupted[0] = true;
+                                    interruptType[0] = "CLARIFY";
+                                    interruptData[0] = toolResult;
+                                } else if ("create_plan".equals(func.getName())) {
+                                    interrupted[0] = true;
+                                    interruptType[0] = "PLAN";
+                                    interruptData[0] = toolResult;
+                                }
                             } finally {
                                 currentUser.remove();
                             }
@@ -292,6 +316,15 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
                 if (validCalls.stream().anyMatch(tc -> tools.stream().anyMatch(t -> t.getDefinition().getName().equals(tc.getFunction().getName()) && t.isTerminal()))) {
                     return "";
+                }
+
+                // 中断工具被调用 → 设置 ThreadLocal 信号，提前返回不继续循环
+                if (interrupted[0]) {
+                    ykd.demo.task.InterruptSignal.set(
+                            ykd.demo.task.InterruptSignal.Type.valueOf(interruptType[0]),
+                            interruptData[0]);
+                    log.info("工具循环中断: {} -> {}", interruptType[0], interruptData[0]);
+                    return interruptData[0];
                 }
 
                 // 每轮后保存检查点（Agent Loop checkpoint）

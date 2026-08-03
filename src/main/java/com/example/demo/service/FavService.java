@@ -145,6 +145,13 @@ public class FavService {
         return videoRepository.countVideosWithSubtitle();
     }
 
+    /**
+     * 删除收藏夹
+     */
+    public boolean deleteFolder(long favId) throws Exception {
+        return apiClient.deleteFavFolder(favId);
+    }
+
     public void close() {
         videoRepository.close();
     }

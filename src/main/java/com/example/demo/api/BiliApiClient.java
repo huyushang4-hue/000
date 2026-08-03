@@ -60,6 +60,48 @@ public class BiliApiClient {
         return root.path("data");
     }
 
+    /** 发送 POST 表单请求（删除类操作需要 csrf） */
+    private JsonNode postForm(String url, String body) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("User-Agent", USER_AGENT)
+                .header("Referer", REFERER)
+                .header("Cookie", cookie)
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        JsonNode root = objectMapper.readTree(response.body());
+
+        int code = root.path("code").asInt(-1);
+        if (code != 0) {
+            throw new RuntimeException("B站API请求失败, code=" + code
+                    + ", message=" + root.path("message").asText("unknown"));
+        }
+        return root.path("data");
+    }
+
+    /** 从 cookie 中提取 csrf token（bili_jct） */
+    private String extractCsrf() {
+        for (String part : cookie.split(";")) {
+            String p = part.trim();
+            if (p.startsWith("bili_jct=")) return p.substring("bili_jct=".length());
+        }
+        return "";
+    }
+
+    /**
+     * 删除收藏夹
+     */
+    public boolean deleteFavFolder(long mediaId) throws Exception {
+        String csrf = extractCsrf();
+        if (csrf.isBlank()) throw new RuntimeException("cookie 缺少 bili_jct，无法删除");
+        String url = API_BASE + "/x/v3/fav/folder/del";
+        postForm(url, "media_id=" + mediaId + "&csrf=" + csrf);
+        return true;
+    }
+
     /**
      * 获取用户创建的所有收藏夹
      */
