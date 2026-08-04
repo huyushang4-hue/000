@@ -33,3 +33,4 @@ build/
 .vscode/
 sessions/
 clawbot-qr.png
+data/ 

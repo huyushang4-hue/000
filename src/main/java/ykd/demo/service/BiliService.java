@@ -219,6 +219,13 @@ public class BiliService {
         return favService.deleteFolder(favId);
     }
 
+    /** 从指定收藏夹移除视频 */
+    public boolean deleteFavVideo(String openId, long favId, String bvId) throws Exception {
+        FavService favService = getFavService(openId);
+        if (favService == null) throw new RuntimeException("未登录B站");
+        return favService.deleteVideo(favId, bvId);
+    }
+
     public byte[] downloadAudio(String openId, String bvId) {
         String cookie = cookieCache.get(openId);
         if (cookie == null) return null;

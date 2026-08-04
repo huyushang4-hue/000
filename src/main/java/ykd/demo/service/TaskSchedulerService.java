@@ -68,6 +68,16 @@ public class TaskSchedulerService {
             log.warn("回收卡死的一次性任务: [{}] {}, 重置为 PENDING", task.getId(), task.getTaskName());
         }
 
+        // ①.5 回收卡死在 RUNNING 的周期任务（上次执行中崩溃），重置为 PENDING 继续触发
+        List<ScheduledTask> stuckCron = taskRepository.findByTypeAndStatus(
+                ScheduledTask.TaskType.CRON,
+                ScheduledTask.TaskStatus.RUNNING);
+        for (ScheduledTask task : stuckCron) {
+            task.setStatus(ScheduledTask.TaskStatus.PENDING);
+            taskRepository.save(task);
+            log.warn("回收卡死的周期任务: [{}] {}, 重置为 PENDING", task.getId(), task.getTaskName());
+        }
+
         // ② 所有 PENDING 的一次性任务重新排期
         List<ScheduledTask> pending = taskRepository.findByTypeAndStatus(
                 ScheduledTask.TaskType.ONCE,
@@ -234,8 +244,10 @@ public class TaskSchedulerService {
                 task.setResult(reply);
                 if (task.getType() == ScheduledTask.TaskType.ONCE) {
                     task.setStatus(ScheduledTask.TaskStatus.COMPLETED);
+                } else {
+                    // CRON 保持 PENDING，只更新结果，以便下次扫描继续触发
+                    task.setStatus(ScheduledTask.TaskStatus.PENDING);
                 }
-                // CRON 保持 PENDING，只更新结果
                 taskRepository.save(task);
 
                 if (task.getUserId() != null && !reply.contains("暂无变化")) {

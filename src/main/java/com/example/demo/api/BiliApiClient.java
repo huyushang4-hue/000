@@ -103,6 +103,23 @@ public class BiliApiClient {
     }
 
     /**
+     * 从收藏夹移除单个视频（不删除视频本身或收藏夹）
+     */
+    public boolean deleteFavVideo(long mediaId, String bvid) throws Exception {
+        if (mediaId <= 0) throw new IllegalArgumentException("收藏夹ID必须为正整数");
+        String csrf = extractCsrf();
+        if (csrf.isBlank()) throw new RuntimeException("cookie 缺少 bili_jct，无法删除");
+
+        long aid = getAid(bvid);
+        if (aid <= 0) throw new RuntimeException("无法获取视频AV号: " + bvid);
+
+        String url = API_BASE + "/x/v3/fav/resource/batch-del";
+        postForm(url, "resources=" + aid + ":2&media_id=" + mediaId
+                + "&platform=web&csrf=" + csrf);
+        return true;
+    }
+
+    /**
      * 获取用户创建的所有收藏夹
      */
     public Map<Long, String> listFavFolders(long mid) throws Exception {

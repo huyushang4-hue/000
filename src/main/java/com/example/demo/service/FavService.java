@@ -152,6 +152,21 @@ public class FavService {
         return apiClient.deleteFavFolder(favId);
     }
 
+    /** 从指定收藏夹移除视频，并清理对应的本地缓存 */
+    public boolean deleteVideo(long favId, String bvId) throws Exception {
+        if (favId <= 0) throw new IllegalArgumentException("收藏夹ID必须为正整数");
+        if (bvId == null || bvId.isBlank()) throw new IllegalArgumentException("视频BV号不能为空");
+
+        boolean deleted = apiClient.deleteFavVideo(favId, bvId);
+        if (deleted) {
+            BiliVideo video = videoRepository.getVideoByBvId(bvId);
+            if (video != null && Objects.equals(video.getFavId(), favId)) {
+                videoRepository.deleteVideo(bvId);
+            }
+        }
+        return deleted;
+    }
+
     public void close() {
         videoRepository.close();
     }
