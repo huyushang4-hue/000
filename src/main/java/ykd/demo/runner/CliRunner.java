@@ -1,6 +1,7 @@
 package ykd.demo.runner;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -20,6 +21,9 @@ import java.util.Scanner;
 @Component
 public class CliRunner implements CommandLineRunner {
     private static final String VERSION = "1.0.0";
+    /** 网页控制台端口 */
+    @Value("${server.port:8080}")
+    private String serverPort;
     private final long startTime;
     private final AiChatService aiChatService;
     private final UserService userService;
@@ -39,6 +43,9 @@ public class CliRunner implements CommandLineRunner {
     @Override
     public void run(String... args) {
         Scanner scanner = new Scanner(System.in);
+        System.out.println("=============================================");
+        System.out.println("  🚀 机器人已就绪，控制台地址：http://localhost:" + serverPort + "/admin.html");
+        System.out.println("=============================================");
         System.out.println("程序已启动，输入命令（输入 help 查看帮助，输入 exit 退出）");
         while (true) {
             try {

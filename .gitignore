@@ -33,4 +33,7 @@ build/
 .vscode/
 sessions/
 clawbot-qr.png
-data/ 
+data/
+# 本地工具缓存
+.codegraph/
+.reasonix/ 

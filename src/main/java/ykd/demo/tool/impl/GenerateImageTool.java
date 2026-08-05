@@ -53,7 +53,9 @@ public class GenerateImageTool implements Tool {
                     queue.add(imgBytes, "generated.png");
                 }
             }
-            return "图片已生成，请在回复中告知用户图片已发送。";
+            // 附带图片 URL：terminal 工具执行后立即 return，LLM 看不到此行；供网页控制台 trace 提取展示
+            return "图片已生成，请在回复中告知用户图片已发送。" +
+                    (imageUrl != null && imageUrl.startsWith("http") ? "\n图片链接: " + imageUrl : "");
         } catch (Exception e) {
             log.error("generate_image failed", e);
             return "图片生成失败，请稍后再试";

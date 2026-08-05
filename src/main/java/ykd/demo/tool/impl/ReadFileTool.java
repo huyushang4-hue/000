@@ -55,7 +55,7 @@ public class ReadFileTool implements Tool {
             String mime = TIKA.detect(bytes);
             log.info("检测到文件类型: {}", mime);
 
-            String text = extractText(bytes, mime);
+            String text = ReadFileTool.extractText(bytes, mime);
             if (text.length() > MAX_CHARS)
                 text = text.substring(0, MAX_CHARS) + "\n\n[... 已截断，共 " + text.length() + " 字符]";
             return text;
@@ -81,7 +81,7 @@ public class ReadFileTool implements Tool {
         }
     }
 
-    private String extractText(byte[] bytes, String mime) throws Exception {
+    private static String extractText(byte[] bytes, String mime) throws Exception {
         if (mime.startsWith("image/")) return "[图片文件，无法提取文字]";
         if (mime.startsWith("audio/")) return "[音频文件，无法提取文字]";
         if (mime.startsWith("video/")) return "[视频文件，无法提取文字]";
@@ -103,13 +103,13 @@ public class ReadFileTool implements Tool {
         return "[不支持的文件格式: " + mime + "]";
     }
 
-    private String extractPdf(byte[] bytes) throws Exception {
+    private static String extractPdf(byte[] bytes) throws Exception {
         try (PDDocument doc = Loader.loadPDF(bytes)) {
             return new PDFTextStripper().getText(doc);
         }
     }
 
-    private String extractDocx(byte[] bytes) throws Exception {
+    private static String extractDocx(byte[] bytes) throws Exception {
         try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(bytes))) {
             StringBuilder sb = new StringBuilder();
             doc.getParagraphs().forEach(p -> sb.append(p.getText()).append('\n'));
@@ -117,7 +117,7 @@ public class ReadFileTool implements Tool {
         }
     }
 
-    private String extractXlsx(byte[] bytes) throws Exception {
+    private static String extractXlsx(byte[] bytes) throws Exception {
         try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(bytes))) {
             StringBuilder sb = new StringBuilder();
             wb.forEach(sheet -> {
@@ -126,6 +126,18 @@ public class ReadFileTool implements Tool {
                 sb.append('\n');
             });
             return sb.toString();
+        }
+    }
+
+    /** 网页控制台上传文件解析入口：字节 → 提取文本（截断到 MAX_CHARS） */
+    public static String extractFileText(byte[] bytes) {
+        try {
+            String text = extractText(bytes, TIKA.detect(bytes));
+            if (text.length() > MAX_CHARS)
+                text = text.substring(0, MAX_CHARS) + "\n\n[... 已截断，共 " + text.length() + " 字符]";
+            return text;
+        } catch (Exception e) {
+            return "文件解析失败：" + e.getMessage();
         }
     }
 }

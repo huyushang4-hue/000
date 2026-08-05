@@ -1,5 +1,7 @@
 package ykd.demo.service;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -25,8 +27,11 @@ public class TaskSchedulerService {
     private final ILinkBotService ilinkBotService;
     private final UserRepository userRepository;
 
-    public static final java.util.concurrent.ConcurrentHashMap<Long, java.util.List<String>> PENDING_PUSHES 
+    public static final java.util.concurrent.ConcurrentHashMap<Long, java.util.List<String>> PENDING_PUSHES
             = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 网页端推送队列（无微信用户的任务推送），前端轮询 /api/admin/pushes 拉取即清除 */
+    public static final java.util.concurrent.ConcurrentLinkedQueue<String> WEB_PUSHES =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
 
     private final CheckpointService checkpointService;
 
@@ -41,6 +46,9 @@ public class TaskSchedulerService {
     /** 已在定时器中排期的 ONCE 任务 ID，防止重复排期 */
     private final java.util.Set<Long> scheduledOnceIds =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** 最近一次 CRON 触发点（taskId -> 触发时间戳），防止 30 秒扫描重复触发同一触发点 */
+    private final java.util.concurrent.ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicLong> lastCronTrigger =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     public TaskSchedulerService(ScheduledTaskRepository taskRepository,
                                 @Lazy AiChatService aiChatService,
@@ -164,7 +172,14 @@ public class TaskSchedulerService {
                 LocalDateTime lastTrigger = expr.next(now.minusSeconds(60));  // 查过去60秒内的触发点
                 
                 if (lastTrigger == null || lastTrigger.isAfter(now)) continue;  // 还没到时间
-                
+
+                // 去重：同一触发点只执行一次（30 秒扫描会在 60 秒窗口内多次看到同一触发点）
+                long triggerEpoch = lastTrigger.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+                java.util.concurrent.atomic.AtomicLong last = lastCronTrigger.computeIfAbsent(
+                        task.getId(), k -> new java.util.concurrent.atomic.AtomicLong(-1));
+                if (last.get() == triggerEpoch) continue;
+                last.set(triggerEpoch);
+
                 log.info("CRON 触发: [{}] {}, expr={}", task.getId(), task.getTaskName(), cron);
                 executeTask(task);
             } catch (Exception e) {
@@ -199,12 +214,41 @@ public class TaskSchedulerService {
         return taskRepository.save(task);
     }
 
+    /** 提取提醒类任务的消息：taskParams 为 {"message":"..."} 时返回消息文本，否则返回 null（走 Agent Loop） */
+    private String extractReminderMessage(ScheduledTask task) {
+        if (task.getTaskParams() == null || task.getTaskParams().isBlank()) return null;
+        try {
+            JsonObject o = JsonParser.parseString(task.getTaskParams()).getAsJsonObject();
+            if (o.has("message") && !o.get("message").getAsString().isBlank()) {
+                return o.get("message").getAsString();
+            }
+        } catch (Exception e) {
+            // 不是 JSON 参数，按普通任务处理
+        }
+        return null;
+    }
+
     /** 执行任务：跑完整 Agent Loop（工具调用 + 自动决策），支持重试和变化检测 */
     private void executeTask(ScheduledTask task) {
         // 占坑：先置 RUNNING 落库，防止执行期间被兜底扫描或重启恢复重复执行
         if (task.getStatus() == ScheduledTask.TaskStatus.PENDING) {
             task.setStatus(ScheduledTask.TaskStatus.RUNNING);
             taskRepository.save(task);
+        }
+
+        // 提醒类任务（schedule_task 创建，taskParams 为 {"message":"..."}）：直接推送消息，不执行搜索/变化检测
+        String reminderMsg = extractReminderMessage(task);
+        if (reminderMsg != null) {
+            task.setResult(reminderMsg);
+            if (task.getType() == ScheduledTask.TaskType.ONCE) {
+                task.setStatus(ScheduledTask.TaskStatus.COMPLETED);
+            } else {
+                task.setStatus(ScheduledTask.TaskStatus.PENDING);
+            }
+            taskRepository.save(task);
+            sendToUser(task.getUserId(), task.getTaskName() + "：\n" + reminderMsg);
+            log.info("提醒类任务直接推送: id={}, name={}", task.getId(), task.getTaskName());
+            return;
         }
 
         int maxRetries = 2;
@@ -250,9 +294,9 @@ public class TaskSchedulerService {
                 }
                 taskRepository.save(task);
 
-                if (task.getUserId() != null && !reply.contains("暂无变化")) {
+                if (!reply.contains("暂无变化")) {
                     sendToUser(task.getUserId(), task.getTaskName() + "：\n" + reply);
-                } else if (task.getUserId() != null) {
+                } else {
                     log.info("无变化，不推送: id={}", task.getId());
                 }
                 return;
@@ -277,6 +321,12 @@ public class TaskSchedulerService {
     }
 
     private void sendToUser(Long userId, String reply) {
+        // 无微信用户（网页端创建的任务）：入网页推送队列，由网页控制台轮询拉取展示
+        if (userId == null) {
+            WEB_PUSHES.add(reply);
+            log.info("网页推送入队: {}", reply.length() > 40 ? reply.substring(0, 40) + "..." : reply);
+            return;
+        }
         userRepository.findById(userId).ifPresent(user -> {
                 String openId = user.getOpenId();
                 ilinkBotService.getRunningBotKeys().forEach(botKey -> {

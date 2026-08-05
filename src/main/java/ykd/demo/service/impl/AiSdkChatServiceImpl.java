@@ -43,6 +43,8 @@ public class AiSdkChatServiceImpl implements AiChatService {
     private final ConcurrentHashMap<String, List<MultiModalMessage>> userContexts = new ConcurrentHashMap<>();
     /** 当前处理线程的用户 ID，ThreadLocal 避免跨线程污染 */
     private static final ThreadLocal<String> currentUser = new ThreadLocal<>();
+    /** 网页控制台调试：当前请求的工具调用轨迹（name/args/result），异步线程手动传递 */
+    private static final ThreadLocal<List<Map<String, Object>>> TOOL_TRACE = new ThreadLocal<>();
 
     /** 获取当前线程的用户 openId（供 Tool 实现类调用） */
     public static String getCurrentToolUser() {
@@ -169,6 +171,48 @@ public class AiSdkChatServiceImpl implements AiChatService {
         return doToolLoop(buildParam());
     }
 
+    /** 网页控制台调试入口：返回回复 + 本次工具调用轨迹（不改变现有接口行为） */
+    public Map<String, Object> chatWithToolsWithTrace(String userMessage) {
+        return chatWithToolsWithTrace(userMessage, null);
+    }
+
+    /** 网页控制台调试入口（图文版）：images = [{base64, text?}]，有图走多模态流程 */
+    public Map<String, Object> chatWithToolsWithTrace(String userMessage, List<Map<String, Object>> images) {
+        TOOL_TRACE.set(Collections.synchronizedList(new ArrayList<>()));
+        // 网页调试没有微信用户身份，给一个固定标识 "web"，让需要 openId 的工具（B站/记忆等）可用
+        boolean hadUser = currentUser.get() != null;
+        if (!hadUser) currentUser.set("web");
+        try {
+            String reply = (images == null || images.isEmpty())
+                    ? chatWithTools(userMessage)
+                    : chatWithImages(userMessage, images);
+            List<Map<String, Object>> calls = TOOL_TRACE.get();
+            return Map.of(
+                    "reply", reply == null ? "" : reply,
+                    "toolCalls", calls == null ? List.of() : new ArrayList<>(calls));
+        } finally {
+            if (!hadUser) currentUser.remove();
+            TOOL_TRACE.remove();
+        }
+    }
+
+    /** 图文混合：把文本 + 图片组装成 entries，复用防抖多模态流程 */
+    private String chatWithImages(String userMessage, List<Map<String, Object>> images) {
+        List<Map<String, Object>> entries = new ArrayList<>();
+        if (userMessage != null && !userMessage.isBlank()) {
+            entries.add(Map.of("type", "TEXT", "text", userMessage));
+        }
+        for (Map<String, Object> img : images) {
+            Map<String, Object> e = new HashMap<>();
+            e.put("type", "IMAGE");
+            e.put("base64Image", String.valueOf(img.getOrDefault("base64", "")));
+            Object t = img.get("text");
+            if (t != null && !String.valueOf(t).isBlank()) e.put("text", String.valueOf(t));
+            entries.add(e);
+        }
+        return processDebouncedInternal(entries);
+    }
+
     /** 防抖批量消息处理（图文混合）：fromUserId 标识用户，ThreadLocal 隔离上下文 */
     @Override
     public String processDebounced(String fromUserId, List<Map<String, Object>> entries) {
@@ -283,9 +327,11 @@ public class AiSdkChatServiceImpl implements AiChatService {
                 final boolean[] interrupted = {false};
                 final String[] interruptType = {null};
                 final String[] interruptData = {null};
+                final List<Map<String, Object>> trace = TOOL_TRACE.get();  // 网页调试轨迹，传给异步线程
                 List<CompletableFuture<Void>> futures = validCalls.stream()
                         .map(tcf -> CompletableFuture.runAsync(() -> {
                             currentUser.set(uid);  // 恢复 ThreadLocal 到异步线程
+                            if (trace != null) TOOL_TRACE.set(trace);
                             try {
                                 ToolCallFunction.CallFunction func = tcf.getFunction();
                                 String toolResult = executeTool(func.getName(), func.getArguments());
@@ -308,6 +354,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
                                 }
                             } finally {
                                 currentUser.remove();
+                                TOOL_TRACE.remove();
                             }
                         }, toolExecutor))
                         .toList();
@@ -364,7 +411,7 @@ public class AiSdkChatServiceImpl implements AiChatService {
 
             return switch (category) {
                 case RETRYABLE -> "网络不稳定，正在重试中，请稍候...";
-                case AUTH_REQUIRED -> "操作需要授权，请联系管理员处理。";
+                case AUTH_REQUIRED -> "AI 服务尚未配置，请启动时设置环境变量 DASHSCOPE_API_KEY（阿里云 DashScope API 密钥）";
                 case DEGRADABLE -> "操作暂时降级处理，已保存当前进度。";
                 case FATAL -> "AI处理超时，请简化问题重新尝试";
             };
@@ -376,6 +423,14 @@ public class AiSdkChatServiceImpl implements AiChatService {
     /** 非幂等工具：重试会造成重复副作用（重复建任务/删任务），禁止重试 */
     private static final java.util.Set<String> NO_RETRY_TOOLS =
             java.util.Set.of("schedule_task", "delete_task", "create_task");
+
+    /** 记录工具调用轨迹（网页控制台调试展示用）：name/args/result */
+    private void recordToolTrace(String name, String arguments, String result) {
+        List<Map<String, Object>> trace = TOOL_TRACE.get();
+        if (trace != null) {
+            trace.add(Map.of("name", name, "args", arguments, "result", result == null ? "" : result));
+        }
+    }
 
     private String executeTool(String name, String arguments) {
         JsonObject args = JsonParser.parseString(arguments).getAsJsonObject();
@@ -395,20 +450,24 @@ public class AiSdkChatServiceImpl implements AiChatService {
                             sleepQuietly(1500L * attempt);
                             continue;
                         }
+                        recordToolTrace(name, arguments, result);
                         return result;
                     } catch (Exception e) {
                         log.warn("Tool {} 异常(第{}/{}): {}", name, attempt, TOOL_RETRY, e.getMessage());
                         if (attempt < TOOL_RETRY && !NO_RETRY_TOOLS.contains(name)) {
                             sleepQuietly(1500L * attempt);
                         } else {
+                            recordToolTrace(name, arguments, "错误：" + e.getMessage());
                             return "错误：" + e.getMessage();
                         }
                     }
                 }
+                recordToolTrace(name, arguments, result == null ? "错误：工具执行失败" : result);
                 return result == null ? "错误：工具执行失败" : result;
             }
         }
         log.warn("未知工具: {}", name);
+        recordToolTrace(name, arguments, "未知工具：" + name);
         return "未知工具：" + name;
     }
 
@@ -484,10 +543,10 @@ public class AiSdkChatServiceImpl implements AiChatService {
         getMessages().add(MultiModalMessage.builder().role(Role.ASSISTANT.getValue()).content(singletonText(text)).build());
     }
 
-    /** 构建请求参数：固定使用 qwen3.7-plus 模型，携带完整 messages + 全部工具定义，每次工具循环都会重新构建 */
+    /** 构建请求参数：固定使用 qwen3.6-plus 模型，携带完整 messages + 全部工具定义，每次工具循环都会重新构建 */
     private MultiModalConversationParam buildParam() {
         return MultiModalConversationParam.builder()
-                .apiKey(apiKey).model("qwen3.7-plus")
+                .apiKey(apiKey).model("qwen3.6-plus")
                 .messages(getMessages()).tools(toolDefs).build();
     }
 

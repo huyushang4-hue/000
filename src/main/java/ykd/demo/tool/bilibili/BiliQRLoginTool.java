@@ -56,9 +56,9 @@ public class BiliQRLoginTool implements Tool {
 
             startPolling(openId);
 
-            return "请在浏览器中打开以下链接扫码登录B站：\n"
-                    + state.qrPageUrl + "\n\n"
-                    + "扫码后在手机上点击确认，我会自动检测登录状态（最长等待5分钟）。";
+            return "登录B站请用手机扫码（二维码已生成）：\n"
+                    + "二维码内容: " + (state.qrContentUrl != null ? state.qrContentUrl : "") + "\n\n"
+                    + "扫码后我会自动检测登录状态，最长等待5分钟。";
         } catch (Exception e) {
             log.error("bili_qr_login 失败", e);
             return "启动扫码登录失败：" + e.getMessage();

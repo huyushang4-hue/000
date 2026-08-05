@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import ykd.demo.entity.ScheduledTask;
 import ykd.demo.entity.User;
 import ykd.demo.repository.UserRepository;
 import ykd.demo.service.TaskSchedulerService;
@@ -59,6 +60,15 @@ public class ScheduleTaskTool implements Tool {
                     ? args.get("userId").getAsString() : null;
 
             Long dbUserId = openId != null ? userRepository.findByOpenId(openId).map(User::getId).orElse(null) : null;
+
+            // 同名任务去重：活跃任务（未完成/未失败）中已存在同名则不重复创建，避免重复提醒
+            boolean hasSameActive = taskService.findAll().stream().anyMatch(t ->
+                    taskName.equals(t.getTaskName())  // taskName 非空；t.getTaskName() 可能为 null，放右侧安全
+                    && t.getStatus() != ScheduledTask.TaskStatus.COMPLETED
+                    && t.getStatus() != ScheduledTask.TaskStatus.FAILED);
+            if (hasSameActive) {
+                return "已存在同名任务「" + taskName + "」，为避免重复提醒，不再创建。如需重新设置请先删除旧任务。";
+            }
 
             if ("CRON".equalsIgnoreCase(taskType)) {
                 String cron = args.has("cronExpression") ? args.get("cronExpression").getAsString() : "0 0 8 * * ?";
